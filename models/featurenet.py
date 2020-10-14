@@ -87,19 +87,26 @@ class FeatureNet(models.VGG):
         self.descriptors = nn.Sequential(
                 nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
                 nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0),
-                Normalize(p=2, dim=1))
+                Normalize(p=2, dim=1),
+                nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True))
 
     def forward(self, inputs):
 
         features = self.features(inputs)
 
-        scores = self.scores(features)
+        scores = self.scores(features).squeeze(1)
 
         descriptors = self.descriptors(features)
 
-        keypoints = (scores > self.score_threshold).nonzero(as_tuple=True)
+        mask = (scores > self.score_threshold)
 
-        return keypoints, scores[keypoints], descriptors[keypoints]
+        keypoints = [mask[i].nonzero(as_tuple=True) for i in range(inputs.size(0))]
+
+        scores = [scores[i,h,w] for i,(h,w) in enumerate(keypoints)]
+
+        descriptors = [descriptors[i,:,h,w].t() for i,(h,w) in enumerate(keypoints)]
+
+        return keypoints, scores, descriptors
 
 
 if __name__ == "__main__":
@@ -119,4 +126,8 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         inputs = torch.randn(args.batch_size,3,*args.crop_size).to(args.device)
-        outputs = net(inputs)
+
+        points, scores, descriptors = net(inputs)
+        for i in range(len(points)):
+            print('h:', points[i][0].shape, 'w:', points[i][1].shape, 
+                  's:', scores[i].shape, 'd:',descriptors[i].shape)
