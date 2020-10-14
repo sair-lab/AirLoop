@@ -29,7 +29,7 @@ class NMS(nn.Module):
     '''
     Non-Maximum Suppression (Temporary Implementation)
     Adopted from SupperGlue Implementation
-    Better implementation using torchvision.ops.nms
+    Better using torchvision.ops.nms
     '''
     def __init__(self, radius=4, iteration=2):
         super().__init__()
@@ -71,13 +71,11 @@ class FeatureNet(models.VGG):
 
     def __init__(self):
         super().__init__(models.vgg13().features)
-        # Only take first 19 layers of pre-trained vgg13
-        # Output dimension: (512, H/8, W/8)
+        # Only take the first 19 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
         self.load_state_dict(models.vgg13(pretrained=True).state_dict())
-        del self.classifier
         self.features = nn.Sequential(*list(self.features.children())[:19])
+        del self.classifier
 
-        # Compute scores for each input pixel
         self.scores = nn.Sequential(
                 nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
                 nn.Conv2d(512, 65, kernel_size=1, stride=1, padding=0), nn.Softmax(dim=1),
@@ -91,33 +89,25 @@ class FeatureNet(models.VGG):
                 nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0),
                 Normalize(p=2, dim=1))
 
-
     def forward(self, inputs):
 
         features = self.features(inputs)
 
-        full_scores = self.scores(features)
-
-        keypoints = (full_scores > self.score_threshold).nonzero(as_tuple=False)
-
-        scores = full_scores[tuple(keypoints.t())]
-
-        # keypoints = [torch.flip(k, [1]).float() for k in keypoints]
+        scores = self.scores(features)
 
         descriptors = self.descriptors(features)
 
-        return keypoints, scores, descriptors
+        keypoints = (scores > self.score_threshold).nonzero(as_tuple=True)
+
+        return keypoints, scores[keypoints], descriptors[keypoints]
 
 
 if __name__ == "__main__":
     '''Test codes'''
-    import os, argparse
-    import torch.utils.data as Data
-    import torchvision.transforms as transforms
-    from torchvision.datasets import CocoDetection
+    import argparse
 
-    parser = argparse.ArgumentParser(description='Train AutoEncoder')
-    parser.add_argument("--device", type=str, default='cuda', help="cuda:0 or cpu")
+    parser = argparse.ArgumentParser(description='Test FeatureNet')
+    parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
     parser.add_argument("--batch-size", type=int, default=2, help="number of minibatch size")
     parser.add_argument('--crop-size', nargs='+', type=int, default=[320,320], help='image crop size')
