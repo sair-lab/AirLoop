@@ -90,23 +90,27 @@ class FeatureNet(models.VGG):
                 Normalize(p=2, dim=1),
                 nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True))
 
+        # self.sample = nn.Sequential(GridSample(scale_factor=8), Normalize(p=2, dim=1))
+
     def forward(self, inputs):
 
         features = self.features(inputs)
 
-        scores = self.scores(features).squeeze(1)
+        scores = self.scores(features)
+
+        b, c, h, w = (scores > self.score_threshold).nonzero(as_tuple=True)
+
+        points = torch.stack((b,h,w), dim=1)
+
+        scores = scores[b,c,h,w]
 
         descriptors = self.descriptors(features)
 
-        mask = (scores > self.score_threshold)
+        descriptors = descriptors[b, :, h, w]
 
-        keypoints = [mask[i].nonzero(as_tuple=True) for i in range(inputs.size(0))]
+        nums = [(b==i).sum() for i in range(inputs.size(0))]
 
-        scores = [scores[i,h,w] for i,(h,w) in enumerate(keypoints)]
-
-        descriptors = [descriptors[i,:,h,w].t() for i,(h,w) in enumerate(keypoints)]
-
-        return keypoints, scores, descriptors
+        return points.split(nums), scores.split(nums), descriptors.split(nums)
 
 
 if __name__ == "__main__":
@@ -116,7 +120,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test FeatureNet')
     parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
-    parser.add_argument("--batch-size", type=int, default=2, help="number of minibatch size")
+    parser.add_argument("--batch-size", type=int, default=30, help="number of minibatch size")
     parser.add_argument('--crop-size', nargs='+', type=int, default=[320,320], help='image crop size')
     args = parser.parse_args()
     torch.manual_seed(args.seed)
@@ -129,5 +133,4 @@ if __name__ == "__main__":
 
         points, scores, descriptors = net(inputs)
         for i in range(len(points)):
-            print('h:', points[i][0].shape, 'w:', points[i][1].shape, 
-                  's:', scores[i].shape, 'd:',descriptors[i].shape)
+            print('P:',points[i].shape, 'S:',scores[i].shape, 'D:',descriptors[i].shape)
