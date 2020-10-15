@@ -74,7 +74,7 @@ class GridSample(nn.Module):
         points = [2*p/(size*self.scale_factor-1)-1 for p in points]
         output = [F.grid_sample(features[i:i+1], p.view(1,1,-1,2), 
                     self.mode, align_corners=True) for i,p in enumerate(points)]
-        return torch.cat(output, dim=-1).squeeze().t()
+        return torch.cat(output, dim=-1).squeeze(0).permute(2,1,0) # To (N, C=1, L)
 
 
 class FeatureNet(models.VGG):
@@ -103,7 +103,7 @@ class FeatureNet(models.VGG):
         self.descriptors = nn.Sequential(
                 nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
                 nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0))
-        self.sample = nn.Sequential(GridSample(scale_factor=8), Normalize(p=2, dim=1))
+        self.sample = nn.Sequential(GridSample(scale_factor=8), nn.BatchNorm1d(1))
 
 
     def forward(self, inputs):
