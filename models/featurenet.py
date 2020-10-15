@@ -71,7 +71,7 @@ class GridSample(nn.Module):
     def forward(self, inputs):
         features, points = inputs
         size = torch.Tensor([features.shape[2:4]]).to(features)
-        points = [p/(size*self.scale_factor-1) for p in points]
+        points = [2*p/(size*self.scale_factor-1)-1 for p in points]
         output = [F.grid_sample(features[i:i+1], p.view(1,1,-1,2), 
                     self.mode, align_corners=True) for i,p in enumerate(points)]
         return torch.cat(output, dim=-1).squeeze().t()
@@ -122,9 +122,9 @@ class FeatureNet(models.VGG):
 
         descriptors = self.descriptors(features)
 
-        descriptors = self.sample((features, points))
+        descriptors = self.sample((descriptors, points)).split(nums)
 
-        return points, scores, descriptors.split(nums)
+        return points, scores, descriptors
 
 
 if __name__ == "__main__":
