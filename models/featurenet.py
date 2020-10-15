@@ -61,6 +61,22 @@ class ZeroBorder(nn.Module):
         return self.pad2(self.pad1(x))
 
 
+class GridSample(nn.Module):
+    '''
+    '''
+    def __init__(self, scale_factor, mode='bilinear'):
+        super().__init__()
+        self.scale_factor, self.mode = scale_factor, mode
+
+    def forward(self, inputs):
+        features, points = inputs
+        size = torch.Tensor([features.shape[2:4]]).to(features)
+        points = [p/(size*self.scale_factor-1) for p in points]
+        output = [F.grid_sample(features[i:i+1], p.view(1,1,-1,2), 
+                    self.mode, align_corners=True) for i,p in enumerate(points)]
+        return torch.cat(output, dim=-1).squeeze().t()
+
+
 class FeatureNet(models.VGG):
 
     feat_dim = 512
@@ -86,11 +102,9 @@ class FeatureNet(models.VGG):
 
         self.descriptors = nn.Sequential(
                 nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
-                nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0),
-                Normalize(p=2, dim=1),
-                nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True))
+                nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0))
+        self.sample = nn.Sequential(GridSample(scale_factor=8), Normalize(p=2, dim=1))
 
-        # self.sample = nn.Sequential(GridSample(scale_factor=8), Normalize(p=2, dim=1))
 
     def forward(self, inputs):
 
@@ -100,21 +114,22 @@ class FeatureNet(models.VGG):
 
         b, c, h, w = (scores > self.score_threshold).nonzero(as_tuple=True)
 
-        points = torch.stack((b,h,w), dim=1)
+        nums = [(b==i).sum() for i in range(inputs.size(0))]
 
-        scores = scores[b,c,h,w]
+        scores = scores[b,c,h,w].split(nums)
+
+        points = torch.stack((h,w), dim=1).split(nums)
 
         descriptors = self.descriptors(features)
 
-        descriptors = descriptors[b, :, h, w]
+        descriptors = self.sample((features, points))
 
-        nums = [(b==i).sum() for i in range(inputs.size(0))]
-
-        return points.split(nums), scores.split(nums), descriptors.split(nums)
+        return points, scores, descriptors.split(nums)
 
 
 if __name__ == "__main__":
     '''Test codes'''
+    import time
     import argparse
 
     parser = argparse.ArgumentParser(description='Test FeatureNet')
@@ -127,10 +142,13 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     net = FeatureNet().to(args.device)
+    inputs = torch.randn(args.batch_size,3,*args.crop_size).to(args.device)
 
+    start = time.time()
     with torch.no_grad():
-        inputs = torch.randn(args.batch_size,3,*args.crop_size).to(args.device)
-
-        points, scores, descriptors = net(inputs)
-        for i in range(len(points)):
-            print('P:',points[i].shape, 'S:',scores[i].shape, 'D:',descriptors[i].shape)
+        for i in range(5):
+            points, scores, descriptors = net(inputs)
+            torch.cuda.empty_cache()
+            for i in range(len(points)):
+                print(i, 'P:',points[i].shape, 'S:',scores[i].shape, 'D:',descriptors[i].shape)
+    print('time:', time.time()-start)
