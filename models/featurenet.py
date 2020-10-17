@@ -145,7 +145,7 @@ class FeatureNet(models.VGG):
 
         descriptors = self.sample((descriptors, points.split(nums)))
 
-        nodes = descriptors + self.encoder(torch.cat([points, scores],dim=-1))
+        nodes = descriptors + self.encoder(torch.cat([points.float(), scores],dim=-1))
 
         features = [self.graph(n) for n in nodes.split(nums)]
 
