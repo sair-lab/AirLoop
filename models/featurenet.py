@@ -74,7 +74,24 @@ class GridSample(nn.Module):
         points = [2*p/(size*self.scale_factor-1)-1 for p in points]
         output = [F.grid_sample(features[i:i+1], p.view(1,1,-1,2), 
                     self.mode, align_corners=True) for i,p in enumerate(points)]
-        return torch.cat(output, dim=-1).squeeze(0).permute(2,1,0) # To (N, C=1, L)
+        return torch.cat(output, dim=-1).squeeze().t()
+
+
+class GraphAttn(nn.Module):
+    def __init__(self, in_features, out_features, alpha, dropout=0.5, beta=0.2):
+        super().__init__()
+        self.alpha = alpha
+        self.tran = nn.Linear(in_features, out_features, bias=False)
+        self.att1 = nn.Linear(out_features, 1, bias=False)
+        self.att2 = nn.Linear(out_features, 1, bias=False)
+        self.norm = nn.Sequential(nn.Softmax(dim=1), nn.Dropout(dropout))
+        self.leakyrelu = nn.LeakyReLU(beta)
+
+    def forward(self, x):
+        h = self.tran(x)
+        att = self.att1(h).unsqueeze(0) + self.att2(h).unsqueeze(1)
+        adj = self.norm(self.leakyrelu(att.squeeze()))
+        return self.alpha * h + (1-self.alpha) * adj @ h
 
 
 class FeatureNet(models.VGG):
@@ -103,8 +120,12 @@ class FeatureNet(models.VGG):
         self.descriptors = nn.Sequential(
                 nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
                 nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0))
-        self.sample = nn.Sequential(GridSample(scale_factor=8), nn.BatchNorm1d(1))
+        self.sample = nn.Sequential(GridSample(scale_factor=8), nn.BatchNorm1d(self.feat_dim))
+        self.encoder = nn.Sequential(nn.Linear(3,256),nn.ReLU(),nn.Linear(256,self.feat_dim))
 
+        self.graph = nn.Sequential(
+                GraphAttn(in_features=512, out_features=256, alpha=0.9), nn.ReLU(),
+                GraphAttn(in_features=256, out_features=256, alpha=0.9))
 
     def forward(self, inputs):
 
@@ -116,15 +137,19 @@ class FeatureNet(models.VGG):
 
         nums = [(b==i).sum() for i in range(inputs.size(0))]
 
-        scores = scores[b,c,h,w].split(nums)
+        scores = scores[b,c,h,w].view(-1,1)
 
-        points = torch.stack((h,w), dim=1).split(nums)
+        points = torch.stack((h,w), dim=1)
 
         descriptors = self.descriptors(features)
 
-        descriptors = self.sample((descriptors, points)).split(nums)
+        descriptors = self.sample((descriptors, points.split(nums)))
 
-        return points, scores, descriptors
+        nodes = descriptors + self.encoder(torch.cat([points, scores],dim=-1))
+
+        features = [self.graph(n) for n in nodes.split(nums)]
+
+        return points.split(nums), scores.split(nums), features
 
 
 if __name__ == "__main__":
