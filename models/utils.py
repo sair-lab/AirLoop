@@ -1,6 +1,38 @@
 #!/usr/bin/env python3
 
+import time
 import torch
+
+
+class Timer:
+    def __init__(self):
+        self.start_time = time.time()
+
+    def tic(self):
+        self.start()
+
+    def show(self, prefix="", output=True):
+        duration = time.time()-self.start_time
+        if output:
+            print(prefix+"%fs" % duration)
+        return duration
+
+    def toc(self, prefix=""):
+        self.end()
+        print(prefix+"%fs = %fHz" % (self.duration, 1/self.duration))
+        return self.duration
+
+    def start(self):
+        self.start_time = time.time()
+
+    def end(self):
+        self.duration = time.time()-self.start_time
+        self.start()
+        return self.duration
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def pix2world(p, depth, T_p, K_inv):
