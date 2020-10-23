@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
-from .utils import Timer
-from .utils import count_parameters
+from .tool import Timer
+from .tool import count_parameters
+from .tool import EarlyStopScheduler
+
 from .featurenet import FeatureNet

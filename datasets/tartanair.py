@@ -7,7 +7,7 @@ from os import path
 from PIL import Image
 from torchvision.datasets import VisionDataset
 
-from .utils import pose2mat
+from utils import pose2mat
 
 
 class DatasetBase(VisionDataset):

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.utils import project_points
+from utils import project_points
 
 
 def reproj_error(p, d_p, T_p, T_q, q, K, K_inv=None, red='none'):

@@ -13,14 +13,14 @@ import torch.optim as optim
 import torch.utils.data as Data
 from torchvision import transforms as T
 
-from models import FeatureNet 
+from utils import Visualization
 from datasets import TartanAir
-from models.utils import Timer
-from models.utils import count_parameters
-from models.utils import EarlyStopScheduler
+from models import FeatureNet
+from models import EarlyStopScheduler
+from models import Timer, count_parameters
 
 
-def test(net, loader, device):
+def test(net, loader, args=None):
     net.eval()
     with torch.no_grad():
         for batch_idx, (image) in enumerate(tqdm.tqdm(loader)):
@@ -30,11 +30,14 @@ def test(net, loader, device):
     return 0.9 # accuracy
 
 
-def train(net, loader, device, creterion, optimizer):
+def train(net, loader, criterion, optimizer, args=None):
     net.train()
+    vis = Visualization('train')
     for batch_idx, (image, depth, pose) in enumerate(tqdm.tqdm(loader)):
         image, depth, pose = image.to(args.device), depth.to(args.device), pose.to(args.device)
         points, scores, features = net(image)
+        if args.visualize:
+            vis.show(image, points)
         # loss and evaluation script
     return 0.9 # accuracy
 
@@ -57,6 +60,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=10, help="minibatch size")
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
+    parser.add_argument('--visualize', dest='visualize', action='store_true')
+    parser.set_defaults(visualize=True)
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -76,7 +81,7 @@ if __name__ == "__main__":
 
     timer = Timer()
     for epoch in range(args.epoch):
-        train_acc = train(net, train_loader, args.device, criterion, optimizer)
+        train_acc = train(net, train_loader, criterion, optimizer, args)
 
         if args.save is not None:
             torch.save(net, args.save)
@@ -85,5 +90,5 @@ if __name__ == "__main__":
             print('Early Stopping!')
             break
 
-    test_acc = test(net, test_loader, args.device)
+    test_acc = test(net, test_loader, args)
     print("Train: %.3f, Test: %.3f, Timing: %.2fs"%(train_acc, test_acc, timer.end()))
