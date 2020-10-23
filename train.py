@@ -11,6 +11,7 @@ import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as Data
+from torchvision import transforms
 
 from models import FeatureNet 
 from datasets import TartanAir
@@ -43,7 +44,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Feature Graph Networks')
     parser.add_argument("--device", type=str, default='cuda:0', help="cuda or cpu")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
-    parser.add_argument("--data-root", type=str, default='/data/datasets', help="data location")
+    parser.add_argument("--data-root", type=str, default='data/office2 tiny', help="data location")
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
     parser.add_argument("--lr", type=float, default=0.01, help="learning rate")
@@ -55,13 +56,24 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=10, help="minibatch size")
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
+    parser.add_argument("--h", type=int, default=320, help='Input image hight.')
+    parser.add_argument("--w", type=int, default=320, help='Input image width.')
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    train_data = TartanAir(root=args.data_root, train=True)
+    crop_center_transform = transforms.Compose([
+        transforms.CenterCrop((args.h, args.w)),
+        transforms.ToTensor()
+    ])
+    depth_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        crop_center_transform
+    ])
+
+    train_data = TartanAir(root=args.data_root, train=True, img_transform=crop_center_transform, depth_transform=depth_transform)
     train_loader = Data.DataLoader(train_data, args.batch_size, True)
-    test_data = TartanAir(root=args.data_root, train=False)
+    test_data = TartanAir(root=args.data_root, train=False, img_transform=crop_center_transform)
     test_loader = Data.DataLoader(test_data, args.batch_size, False)
 
     criterion = nn.CrossEntropyLoss()

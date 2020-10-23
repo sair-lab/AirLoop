@@ -2,6 +2,7 @@
 
 import time
 import torch
+from scipy.spatial.transform import Rotation as R
 
 
 class Timer:
@@ -76,6 +77,20 @@ class EarlyStopScheduler(torch.optim.lr_scheduler.ReduceLROnPlateau):
                 return False
             else:
                 return True
+
+
+def pose2mat(pose):
+    """Converts pose vectors to matrices.
+
+    Args:
+      pose: [tx, ty, tz, qx, qy, qz, qw] (N, 7).
+
+    Returns:
+      [R t] (N, 3, 4).
+    """
+    t = pose[:, 0:3, None]
+    q = R.from_quat(pose[:, 3:7]).as_matrix()
+    return torch.cat([torch.from_numpy(q), torch.from_numpy(t)], dim=2)
 
 
 def pix2world(p, depth, T_p, K_inv):
