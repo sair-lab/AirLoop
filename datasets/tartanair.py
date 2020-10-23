@@ -5,8 +5,9 @@ import torch
 import numpy as np
 from os import path
 from PIL import Image
-from models.utils import pose2mat
 from torchvision.datasets import VisionDataset
+
+from .utils import pose2mat
 
 
 class DatasetBase(VisionDataset):
