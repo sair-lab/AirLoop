@@ -104,7 +104,7 @@ class FeatureNet(models.VGG):
 
     def __init__(self):
         super().__init__(models.vgg13().features)
-        # Only take the first 19 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
+        # Only adopt the first 19 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
         self.load_state_dict(models.vgg13(pretrained=True).state_dict())
         self.features = nn.Sequential(*list(self.features.children())[:19])
         del self.classifier
@@ -131,13 +131,13 @@ class FeatureNet(models.VGG):
 
         features = self.features(inputs)
 
-        scores = self.scores(features)
+        pointness = self.scores(features)
 
-        b, c, h, w = (scores > self.score_threshold).nonzero(as_tuple=True)
+        b, c, h, w = (pointness > self.score_threshold).nonzero(as_tuple=True)
 
         nums = [(b==i).sum() for i in range(inputs.size(0))]
 
-        scores = scores[b,c,h,w].view(-1,1)
+        scores = pointness[b,c,h,w].view(-1,1)
 
         points = torch.stack((h,w), dim=1)
 
@@ -149,7 +149,7 @@ class FeatureNet(models.VGG):
 
         features = [self.graph(n) for n in nodes.split(nums)]
 
-        return points.split(nums), scores.split(nums), features
+        return features, points.split(nums), pointness if self.training else scores.split(nums)
 
 
 if __name__ == "__main__":

@@ -22,23 +22,26 @@ from models import Timer, count_parameters
 
 def test(net, loader, args=None):
     net.eval()
+    vis = Visualization('test')
     with torch.no_grad():
         for batch_idx, (image) in enumerate(tqdm.tqdm(loader)):
             image = image.to(args.device)
-            points, scores, features = net(image)
+            features, points, scores = net(image)
             # evaluation script
+            if args.visualize:
+                vis.show(image, points)
     return 0.9 # accuracy
 
 
 def train(net, loader, criterion, optimizer, args=None):
     net.train()
     vis = Visualization('train')
-    for batch_idx, (image, depth, pose) in enumerate(tqdm.tqdm(loader)):
-        image, depth, pose = image.to(args.device), depth.to(args.device), pose.to(args.device)
-        points, scores, features = net(image)
-        if args.visualize:
-            vis.show(image, points)
+    for idx, (images, depths, poses) in enumerate(tqdm.tqdm(loader)):
+        images, depths, poses = images.to(args.device), depths.to(args.device), poses.to(args.device)
+        features, points, pointsness = net(images)
         # loss and evaluation script
+        if args.visualize:
+            vis.show(images, points)
     return 0.9 # accuracy
 
 
@@ -66,7 +69,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    image_transform = T.Compose([T.CenterCrop(args.crop_size), T.ToTensor()])
+    image_transform = T.Compose([T.ToTensor()])
     depth_transform = T.Compose([T.ToPILImage(), image_transform])
 
     train_data = TartanAir(root=args.data_root, train=True, img_transform=image_transform, depth_transform=depth_transform)
