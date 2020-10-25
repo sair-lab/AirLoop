@@ -11,8 +11,8 @@ class Visualization():
     black = (  0,  0,  0)
     blue  = (255,  0,  0)
     red   = (  0,  0,255)
-    def __init__(self, winname=None):
-        self.winname = winname
+    def __init__(self, winname=None, debug=False):
+        self.winname, self.debug = winname, debug
         self.radius = 1
         self.thickness = 1
 

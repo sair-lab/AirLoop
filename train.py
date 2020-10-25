@@ -35,7 +35,7 @@ def test(net, loader, args=None):
 
 def train(net, loader, criterion, optimizer, args=None):
     net.train()
-    vis = Visualization('train')
+    vis = Visualization('train', args.debug)
     for idx, (images, depths, poses) in enumerate(tqdm.tqdm(loader)):
         images, depths, poses = images.to(args.device), depths.to(args.device), poses.to(args.device)
         features, points, pointsness = net(images)
@@ -64,7 +64,8 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument('--visualize', dest='visualize', action='store_true')
-    parser.set_defaults(visualize=True)
+    parser.add_argument('--debug', dest='debug', action='store_true')
+    parser.set_defaults(visualize=True, debug=True)
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
