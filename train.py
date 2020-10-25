@@ -18,6 +18,7 @@ from datasets import TartanAir
 from models import FeatureNet
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
+from models.loss import training_criterion
 
 
 def test(net, loader, args=None):
@@ -38,7 +39,20 @@ def train(net, loader, criterion, optimizer, args=None):
     vis = Visualization('train', args.debug)
     for idx, (images, depths, poses) in enumerate(tqdm.tqdm(loader)):
         images, depths, poses = images.to(args.device), depths.to(args.device), poses.to(args.device)
-        features, points, pointsness = net(images)
+        features, points, pointness = net(images)
+
+        # TEMP
+        fx = 320.0 / 2
+        fy = 320.0 / 2
+        cx = 240.0 / 2
+        cy = 320.0 / 2
+
+        K = torch.tensor([[fx, 0, cx],
+                          [0, fy, cy],
+                          [0, 0, 1]]).to(images)
+        training_criterion(features, points, pointness, depths, poses, K, torch.inverse(K), images)
+        # TEMP
+
         # loss and evaluation script
         if args.visualize:
             vis.show(images, points)
@@ -60,7 +74,7 @@ if __name__ == "__main__":
     parser.add_argument("--momentum", type=float, default=0.9, help="momentum of optim")
     parser.add_argument("--w-decay", type=float, default=0, help="weight decay of optim")
     parser.add_argument("--epoch", type=int, default=15, help="number of epoches")
-    parser.add_argument("--batch-size", type=int, default=10, help="minibatch size")
+    parser.add_argument("--batch-size", type=int, default=5, help="minibatch size")
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument('--visualize', dest='visualize', action='store_true')
@@ -70,11 +84,11 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    image_transform = T.Compose([T.ToTensor()])
-    depth_transform = T.Compose([T.ToPILImage(), image_transform])
+    image_transform = T.Compose([T.Resize((240, 320)), lambda img: np.array(img), T.ToTensor()])
+    depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
 
     train_data = TartanAir(root=args.data_root, train=True, img_transform=image_transform, depth_transform=depth_transform)
-    train_loader = Data.DataLoader(train_data, args.batch_size, True)
+    train_loader = Data.DataLoader(train_data, args.batch_size, False)
     test_data = TartanAir(root=args.data_root, train=False, img_transform=image_transform)
     test_loader = Data.DataLoader(test_data, args.batch_size, False)
 
