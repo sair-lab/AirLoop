@@ -2,8 +2,10 @@
 
 import torch
 import torch.nn as nn
+from kornia.feature import nms
 from torchvision import models
 import torch.nn.functional as F
+import kornia.geometry.conversions as C
 
 
 class IndexSelect(nn.Module):
@@ -29,7 +31,6 @@ class NMS(nn.Module):
     '''
     Non-Maximum Suppression (Temporary Implementation)
     Adopted from SupperGlue Implementation
-    Better using torchvision.ops.nms
     '''
     def __init__(self, radius=4, iteration=2):
         super().__init__()
@@ -64,14 +65,14 @@ class ZeroBorder(nn.Module):
 class GridSample(nn.Module):
     '''
     '''
-    def __init__(self, scale_factor, mode='bilinear'):
+    def __init__(self, scale, mode='bilinear'):
         super().__init__()
-        self.scale_factor, self.mode = scale_factor, mode
+        self.scale, self.mode = scale, mode
 
     def forward(self, inputs):
         features, points = inputs
-        size = torch.Tensor([features.shape[2:4]]).to(features)
-        points = [2*p/(size*self.scale_factor-1)-1 for p in points]
+        height, width = features.size(2)*self.scale, features.size(3)*self.scale
+        points = [C.normalize_pixel_coordinates(p, height, width) for p in points]
         output = [F.grid_sample(features[i:i+1], p.view(1,1,-1,2), 
                     self.mode, align_corners=True) for i,p in enumerate(points)]
         return torch.cat(output, dim=-1).squeeze().t()
@@ -114,13 +115,13 @@ class FeatureNet(models.VGG):
                 nn.Conv2d(512, 65, kernel_size=1, stride=1, padding=0), nn.Softmax(dim=1),
                 IndexSelect(dim=1, index=torch.LongTensor(list(range(64)))),
                 nn.PixelShuffle(upscale_factor=8),
-                NMS(radius=4, iteration=2),
+                nms.NonMaximaSuppression2d(kernel_size=(9,9)),
                 ZeroBorder(self.zero_border))
 
         self.descriptors = nn.Sequential(
                 nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
                 nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0))
-        self.sample = nn.Sequential(GridSample(scale_factor=8), nn.BatchNorm1d(self.feat_dim))
+        self.sample = nn.Sequential(GridSample(scale=8), nn.BatchNorm1d(self.feat_dim))
         self.encoder = nn.Sequential(nn.Linear(3,256),nn.ReLU(),nn.Linear(256,self.feat_dim))
 
         self.graph = nn.Sequential(
