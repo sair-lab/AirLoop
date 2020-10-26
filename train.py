@@ -16,6 +16,7 @@ from torchvision import transforms as T
 from utils import Visualization
 from datasets import TartanAir
 from models import FeatureNet
+from models import FeatureNetLoss
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
 from models.loss import training_criterion
@@ -50,7 +51,9 @@ def train(net, loader, criterion, optimizer, args=None):
         K = torch.tensor([[fx, 0, cx],
                           [0, fy, cy],
                           [0, 0, 1]]).to(images)
-        training_criterion(features, points, pointness, depths, poses, K, torch.inverse(K), images)
+
+        loss = criterion(features, points, pointness, depths, poses, K, torch.inverse(K), images)
+        # loss.backward()
         # TEMP
 
         # loss and evaluation script
@@ -92,7 +95,7 @@ if __name__ == "__main__":
     test_data = TartanAir(root=args.data_root, train=False, img_transform=image_transform)
     test_loader = Data.DataLoader(test_data, args.batch_size, False)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = FeatureNetLoss()
     net = FeatureNet().to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
