@@ -21,6 +21,19 @@ def training_criterion(features, points, scores_dense, depths_dense, poses, K, K
     depths = [depths_dense[src, 0, p[:, 0], p[:, 1]]
               for src, p in enumerate(points)]
 
+    eps = torch.tensor(1e-8).to(scores_dense)
+
+    # score-distinciveness loss
+    score_dist_loss = 0
+    for feature, score in zip(features, scores):
+        normalized_feature = feature / torch.max(feature.norm(dim=1).unsqueeze(1), eps)
+        # ave_cos_sim_i = (sum_{j != i} f_i' * f_j) / (n - 1) = ((f_i' * sum_j f_j) - 1) / (n - 1)
+        sum_feature = normalized_feature.sum(dim=0)
+        ave_cossim = (normalized_feature @ sum_feature.T - 1) / (len(feature) - 1)
+
+        score_dist_loss += F.binary_cross_entropy(score, (1 - F.relu(ave_cossim)).detach())
+
+
     img_boudnary = torch.tensor(
         [[0, 0], torch.tensor(scores_dense.shape[2:4]) - 1]).to(scores_dense)
 
@@ -58,7 +71,7 @@ def training_criterion(features, points, scores_dense, depths_dense, poses, K, K
             pass
         # TEMP
 
-    return score_proj_loss
+    return score_dist_loss, score_proj_loss
 
 
 def reproj_error(p, d_p, T_p, T_q, q, K, K_inv=None, red='none'):
