@@ -15,49 +15,42 @@ vis = Visualization('src->tgt')
 
 class FeatureNetLoss(nn.Module):
     def __init__(self):
-        super().__init__()
-        self.distinctloss = DistinctLoss()
+        super().__init__(lamb_dist=1)
+        self.distinctloss = DistinctivenessLoss()
+        self.lamb_dist = lamb_dist
 
     def forward(self, features, points, scores_dense, depths_dense, poses, K, K_inv, imgs):
-        return 0
+        scores = [scores_dense[b, 0, p[:, 0], p[:, 1]]
+                  for b, p in enumerate(points)]
+        depths = [depths_dense[b, 0, p[:, 0], p[:, 1]]
+                  for b, p in enumerate(points)]
+
+        total_loss = self.lamb_dist * self.distinctloss(features, scores)
+
+        return total_loss
 
 
-class DistinctLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
+class DistinctivenessLoss(nn.Module):
+    def __init__(self, eps=1e-8):
+        super(DistinctivenessLoss, self).__init__()
         self.bceloss = nn.BCELoss()
+        self.eps = eps
 
     def forward(self, features, scores):
         score_dist_loss = 0
         for feature, score in zip(features, scores):
-            normalized_feature = feature / torch.max(feature.norm(dim=1).unsqueeze(1), eps)
-            sum_feature = normalized_feature.sum(dim=0)
-            ave_cossim = (normalized_feature @ sum_feature.T - 1) / (len(feature) - 1)
-            score_dist_loss += self.bceloss(score, (1 - F.relu(ave_cossim)).detach())
+            feature = F.normalize(feature, eps=self.eps)
+            sum_feature = feature.sum(dim=0)
+            # ave_cos_sim_i = (sum_{j != i} f_i' * f_j) / (n - 1) = ((f_i' * sum_j f_j) - 1) / (n - 1)
+            ave_cossim = (feature @ sum_feature.T - 1) / (len(feature) - 1)
+            score_dist_loss += self.bceloss(score,
+                                            (1 - F.relu(ave_cossim)).detach())
+
         return score_dist_loss
 
 
+# Deprecate
 def training_criterion(features, points, scores_dense, depths_dense, poses, K, K_inv, imgs):
-    # TODO distinciveness loss
-
-    scores = [scores_dense[src, 0, p[:, 0], p[:, 1]]
-              for src, p in enumerate(points)]
-    depths = [depths_dense[src, 0, p[:, 0], p[:, 1]]
-              for src, p in enumerate(points)]
-
-    eps = torch.tensor(1e-8).to(scores_dense)
-
-    # score-distinciveness loss
-    score_dist_loss = 0
-    for feature, score in zip(features, scores):
-        normalized_feature = feature / torch.max(feature.norm(dim=1).unsqueeze(1), eps)
-        # ave_cos_sim_i = (sum_{j != i} f_i' * f_j) / (n - 1) = ((f_i' * sum_j f_j) - 1) / (n - 1)
-        sum_feature = normalized_feature.sum(dim=0)
-        ave_cossim = (normalized_feature @ sum_feature.T - 1) / (len(feature) - 1)
-
-        score_dist_loss += F.binary_cross_entropy(score, (1 - F.relu(ave_cossim)).detach())
-
-
     img_boudnary = torch.tensor(
         [[0, 0], torch.tensor(scores_dense.shape[2:4]) - 1]).to(scores_dense)
 
@@ -111,20 +104,6 @@ def reproj_error(p, d_p, T_p, T_q, q, K, K_inv=None, red='none'):
       MSE(reproject(p), q).
     """
     return F.mse_loss(project_points(p, d_p, T_p, T_q, K, K_inv), q, reduction=red).sum(1)
-
-
-def score_loss(score, is_inlier, red='none'):
-    """Computes loss on confidence scores from matcher.
-
-    Args:
-      score:     The score between 0 and 1 of matching point pairs from matcher (N).
-      is_inlier: Is this pair a inliner (N)?
-      red:       Optional. Reduce to one number?
-
-    Returns:
-      CrossEntropy(score, e_pq <= in_thresh) (N).
-    """
-    return F.binary_cross_entropy(score, is_inlier, reduction=red)
 
 
 def descriptor_loss(D_p, D_q, is_inlier, red='none'):
