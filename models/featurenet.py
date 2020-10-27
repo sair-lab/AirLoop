@@ -18,37 +18,6 @@ class IndexSelect(nn.Module):
         return x.index_select(self.dim, self.index)
 
 
-class Normalize(nn.Module):
-    def __init__(self, p=2, dim=1, eps=1e-12):
-        super().__init__()
-        self.p, self.dim, self.eps = p, dim, eps
-
-    def forward(self, x):
-        return F.normalize(x, self.p, self.dim, self.eps)
-
-
-class NMS(nn.Module):
-    '''
-    Non-Maximum Suppression (Temporary Implementation)
-    Adopted from SupperGlue Implementation
-    '''
-    def __init__(self, radius=4, iteration=2):
-        super().__init__()
-        assert(radius >= 0)
-        self.iteration = iteration
-        self.pool = nn.MaxPool2d(kernel_size=radius*2+1, stride=1,padding=radius)
-
-    def forward(self, scores):
-        zeros = torch.zeros_like(scores)
-        max_mask = scores == self.pool(scores)
-        for _ in range(self.iteration):
-            supp_mask = self.pool(max_mask.float()) > 0
-            supp_scores = torch.where(supp_mask, zeros, scores)
-            new_max_mask = supp_scores == self.pool(supp_scores)
-            max_mask = max_mask | (new_max_mask & (~supp_mask))
-        return torch.where(max_mask, scores, zeros)
-
-
 class ZeroBorder(nn.Module):
     '''
     Set Boarders to Zero
@@ -63,19 +32,15 @@ class ZeroBorder(nn.Module):
 
 
 class GridSample(nn.Module):
-    '''
-    '''
-    def __init__(self, scale, mode='bilinear'):
+    def __init__(self, mode='bilinear'):
         super().__init__()
-        self.scale, self.mode = scale, mode
+        self.mode = mode
 
     def forward(self, inputs):
         features, points = inputs
-        height, width = features.size(2)*self.scale, features.size(3)*self.scale
-        points = [C.normalize_pixel_coordinates(p, height, width) for p in points]
-        output = [F.grid_sample(features[i:i+1], p.view(1,1,-1,2), 
-                    self.mode, align_corners=True) for i,p in enumerate(points)]
-        return torch.cat(output, dim=-1).squeeze().t()
+        points = points.view(features.size(0),1,-1,2)
+        output = F.grid_sample(features, points, self.mode, align_corners=True)
+        return output.squeeze(2).permute(0,2,1)
 
 
 class GraphAttn(nn.Module):
@@ -90,19 +55,15 @@ class GraphAttn(nn.Module):
 
     def forward(self, x):
         h = self.tran(x)
-        att = self.att1(h).unsqueeze(0) + self.att2(h).unsqueeze(1)
+        att = self.att1(h) + self.att2(h).permute(0,2,1)
         adj = self.norm(self.leakyrelu(att.squeeze()))
         return self.alpha * h + (1-self.alpha) * adj @ h
 
 
 class FeatureNet(models.VGG):
-
     feat_dim = 512
-    radius = 4
-    score_threshold = 0.005
-    max_keypoints = -1
+    feat_num = 500
     zero_border = 4
-
     def __init__(self):
         super().__init__(models.vgg13().features)
         # Only adopt the first 19 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
@@ -121,7 +82,7 @@ class FeatureNet(models.VGG):
         self.descriptors = nn.Sequential(
                 nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
                 nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0))
-        self.sample = nn.Sequential(GridSample(scale=8), nn.BatchNorm1d(self.feat_dim))
+        self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
         self.encoder = nn.Sequential(nn.Linear(3,256),nn.ReLU(),nn.Linear(256,self.feat_dim))
 
         self.graph = nn.Sequential(
@@ -130,27 +91,27 @@ class FeatureNet(models.VGG):
 
     def forward(self, inputs):
 
+        B, _, H, W = inputs.shape
+
         features = self.features(inputs)
 
         pointness = self.scores(features)
 
-        b, c, h, w = (pointness > self.score_threshold).nonzero(as_tuple=True)
+        scores, points = pointness.view(B,-1,1).topk(self.feat_num, dim=1)
 
-        nums = [(b==i).sum() for i in range(inputs.size(0))]
+        points = torch.cat((points%H, points//W), dim=-1)
 
-        scores = pointness[b,c,h,w].view(-1,1)
-
-        points = torch.stack((h,w), dim=1)
+        points = C.normalize_pixel_coordinates(points, H, W)
 
         descriptors = self.descriptors(features)
 
-        descriptors = self.sample((descriptors, points.split(nums)))
+        descriptors = self.sample((descriptors, points))
 
-        nodes = descriptors + self.encoder(torch.cat([points.float(), scores],dim=-1))
+        descriptors = descriptors + self.encoder(torch.cat([points, scores], dim=-1))
 
-        features = [self.graph(n) for n in nodes.split(nums)]
+        descriptors = self.graph(descriptors)
 
-        return features, points.split(nums), pointness if self.training else scores.split(nums)
+        return descriptors, points, pointness if self.training else scores
 
 
 if __name__ == "__main__":
@@ -161,20 +122,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test FeatureNet')
     parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
-    parser.add_argument("--batch-size", type=int, default=30, help="number of minibatch size")
+    parser.add_argument("--batch-size", type=int, default=10, help="number of minibatch size")
     parser.add_argument('--crop-size', nargs='+', type=int, default=[320,320], help='image crop size')
     args = parser.parse_args()
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    net = FeatureNet().to(args.device)
+    net = FeatureNet().to(args.device).eval()
     inputs = torch.randn(args.batch_size,3,*args.crop_size).to(args.device)
 
     start = time.time()
     with torch.no_grad():
         for i in range(5):
-            points, scores, descriptors = net(inputs)
-            torch.cuda.empty_cache()
-            for i in range(len(points)):
-                print(i, 'P:',points[i].shape, 'S:',scores[i].shape, 'D:',descriptors[i].shape)
+            descriptors, points, scores = net(inputs)
+            print(i, 'D:',descriptors.shape, 'P:',points.shape, 'S:',scores.shape)
     print('time:', time.time()-start)
