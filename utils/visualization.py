@@ -23,8 +23,8 @@ class Visualization():
         points = C.denormalize_pixel_coordinates(points, h, w)
         for i in range(batch.size(0)):
             grid = torchvision.utils.make_grid(batch[i], padding=0)
-            image, centers = torch2cv(grid).copy(), point2pixel(points[i])
-            image = circles(image, centers, self.radius, self.red, self.thickness)
+            image = torch2cv(grid).copy()
+            image = circles(image, points[i], self.radius, self.red, self.thickness)
             cv2.imshow(self.winname+str(i), image)
         cv2.waitKey(1)
 
@@ -32,8 +32,7 @@ class Visualization():
         h, w = img1.size(-2), img1.size(-1)
         pts1 = C.denormalize_pixel_coordinates(pts1, h, w)
         pts2 = C.denormalize_pixel_coordinates(pts2, h, w)
-        img1, pts1 = torch2cv(img1).copy(), point2pixel(pts1)
-        img2, pts2 = torch2cv(img2).copy(), point2pixel(pts2)
+        img1, img2  = torch2cv(img1).copy(), torch2cv(img2).copy()
         image = matches(img1,pts1,img2,pts2,self.blue,2)
         cv2.imshow(self.winname, image)
         cv2.waitKey(1)
@@ -55,11 +54,4 @@ def circles(image, points, radius, color, thickness):
 
 
 def torch2cv(image):
-    ''' CxHxW --> WxHxC, thus coordinates reversed. Please use point2pixel'''
     return (255*image).type(torch.uint8).cpu().numpy()[::-1].transpose((1, 2, 0))
-
-
-def point2pixel(point):
-    ''' See torch2cv '''
-    assert(point.size(-1)==2)
-    return point.flip(-1)

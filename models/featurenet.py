@@ -99,7 +99,7 @@ class FeatureNet(models.VGG):
 
         scores, points = pointness.view(B,-1,1).topk(self.feat_num, dim=1)
 
-        points = torch.cat((points%H, points//H), dim=-1)
+        points = torch.cat((points%W, points//W), dim=-1)
 
         points = C.normalize_pixel_coordinates(points, H, W)
 
