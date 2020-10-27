@@ -4,6 +4,7 @@ import cv2
 import torch
 import numpy as np
 import torchvision
+import kornia.geometry.conversions as C
 from mpl_toolkits.mplot3d import Axes3D
 
 
@@ -18,6 +19,8 @@ class Visualization():
         self.thickness = 1
 
     def show(self, batch, points):
+        b, c, h, w = batch.shape
+        points = C.denormalize_pixel_coordinates(points, h, w)
         for i in range(batch.size(0)):
             grid = torchvision.utils.make_grid(batch[i], padding=0)
             image, centers = torch2cv(grid).copy(), point2pixel(points[i])
@@ -26,6 +29,9 @@ class Visualization():
         cv2.waitKey(1)
 
     def showmatch(self, img1, pts1, img2, pts2):
+        h, w = img1.size(-2), img1.size(-1)
+        pts1 = C.denormalize_pixel_coordinates(pts1, h, w)
+        pts2 = C.denormalize_pixel_coordinates(pts2, h, w)
         img1, pts1 = torch2cv(img1).copy(), point2pixel(pts1)
         img2, pts2 = torch2cv(img2).copy(), point2pixel(pts2)
         image = matches(img1,pts1,img2,pts2,self.blue,2)
