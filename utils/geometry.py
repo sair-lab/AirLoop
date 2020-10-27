@@ -15,7 +15,8 @@ def pose2mat(pose):
       [R t] (N, 3, 4).
     """
     t = pose[:, 0:3, None]
-    rot = R.from_quat(pose[:, 3:7]).as_matrix().astype(np.float32)
+    rot = R.from_quat(pose[:, 3:7]).as_matrix().astype(np.float32).transpose(0, 2, 1)
+    t = -rot @ t
     return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)
 
 

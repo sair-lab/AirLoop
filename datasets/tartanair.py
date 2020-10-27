@@ -82,7 +82,7 @@ class TartanAir(DatasetBase):
     def load_poses(self, pose_file):
         poses7 = np.loadtxt(pose_file).astype(np.float32)
         assert(poses7.shape == (self.size, 7))  # position + quaternion
-        ned2den = torch.tensor([[0, 0, 1],
-                                [0, 1, 0],
+        ned2den = torch.tensor([[0, 1, 0],
+                                [0, 0, 1],
                                 [1, 0, 0]]).to(dtype=torch.float32)
         return ned2den @ pose2mat(poses7)
