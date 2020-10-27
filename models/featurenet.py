@@ -62,7 +62,7 @@ class GraphAttn(nn.Module):
 
 class FeatureNet(models.VGG):
     feat_dim = 512
-    feat_num = 500
+    feat_num = 1000
     zero_border = 4
     def __init__(self):
         super().__init__(models.vgg13().features)
@@ -84,6 +84,9 @@ class FeatureNet(models.VGG):
                 nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0))
         self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
         self.encoder = nn.Sequential(nn.Linear(3,256),nn.ReLU(),nn.Linear(256,self.feat_dim))
+        self.residual = nn.Sequential(
+                nn.Conv2d(3, 128, kernel_size=1), nn.ReLU(),
+                nn.Conv2d(128, self.feat_dim, kernel_size=1))
 
         self.graph = nn.Sequential(
                 GraphAttn(in_features=512, out_features=256, alpha=0.9), nn.ReLU(),
@@ -105,7 +108,9 @@ class FeatureNet(models.VGG):
 
         descriptors = self.descriptors(features)
 
-        descriptors = self.sample((descriptors, points))
+        residual = self.residual(inputs)
+
+        descriptors = self.sample((descriptors, points)) + self.sample((residual, points))
 
         descriptors = descriptors + self.encoder(torch.cat([points, scores], dim=-1))
 
