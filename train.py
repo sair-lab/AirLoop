@@ -26,9 +26,9 @@ def test(net, loader, args=None):
     net.eval()
     vis = Visualization('test')
     with torch.no_grad():
-        for batch_idx, (image) in enumerate(tqdm.tqdm(loader)):
+        for idx, (image) in enumerate(tqdm.tqdm(loader)):
             image = image.to(args.device)
-            features, points, scores = net(image)
+            descriptors, points, scores = net(image)
             # evaluation script
             if args.visualize:
                 vis.show(image, points)
@@ -40,7 +40,7 @@ def train(net, loader, criterion, optimizer, args=None):
     vis = Visualization('train', args.debug)
     for idx, (images, depths, poses) in enumerate(tqdm.tqdm(loader)):
         images, depths, poses = images.to(args.device), depths.to(args.device), poses.to(args.device)
-        features, points, pointness = net(images)
+        descriptors, points, pointness = net(images)
 
         # TEMP
         fx = 320.0 / 2
@@ -52,7 +52,7 @@ def train(net, loader, criterion, optimizer, args=None):
                           [0, fy, cy],
                           [0, 0, 1]]).to(images)
 
-        loss = criterion(features, points, pointness, depths, poses, K, torch.inverse(K), images)
+        # loss = criterion(descriptors, points, pointness, depths, poses, K, K.inverse(), images)
         # loss.backward()
         # TEMP
 

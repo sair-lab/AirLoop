@@ -14,8 +14,8 @@ vis = Visualization('src->tgt')
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self):
-        super().__init__(lamb_dist=1)
+    def __init__(self, lamb_dist=1):
+        super().__init__()
         self.distinctloss = DistinctivenessLoss()
         self.lamb_dist = lamb_dist
 

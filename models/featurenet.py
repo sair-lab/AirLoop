@@ -50,7 +50,7 @@ class GraphAttn(nn.Module):
         self.tran = nn.Linear(in_features, out_features, bias=False)
         self.att1 = nn.Linear(out_features, 1, bias=False)
         self.att2 = nn.Linear(out_features, 1, bias=False)
-        self.norm = nn.Sequential(nn.Softmax(dim=1), nn.Dropout(dropout))
+        self.norm = nn.Sequential(nn.Softmax(dim=-1), nn.Dropout(dropout))
         self.leakyrelu = nn.LeakyReLU(beta)
 
     def forward(self, x):
