@@ -61,36 +61,33 @@ class GraphAttn(nn.Module):
 
 
 class FeatureNet(models.VGG):
-    feat_dim = 512
-    feat_num = 1000
-    zero_border = 4
-    def __init__(self):
+    def __init__(self, feat_dim=512, feat_num=1000):
         super().__init__(models.vgg13().features)
+        self.feat_dim, self.feat_num = feat_dim, feat_num
         # Only adopt the first 19 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
         self.load_state_dict(models.vgg13(pretrained=True).state_dict())
         self.features = nn.Sequential(*list(self.features.children())[:19])
         del self.classifier
 
         self.scores = nn.Sequential(
-                nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
-                nn.Conv2d(512, 65, kernel_size=1, stride=1, padding=0), nn.Softmax(dim=1),
+                nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1), nn.ReLU(),
+                nn.Conv2d(256, 65, kernel_size=1, stride=1, padding=0), nn.Softmax(dim=1),
                 IndexSelect(dim=1, index=torch.LongTensor(list(range(64)))),
                 nn.PixelShuffle(upscale_factor=8),
                 nms.NonMaximaSuppression2d(kernel_size=(9,9)),
-                ZeroBorder(self.zero_border))
+                ZeroBorder(border=4))
 
         self.descriptors = nn.Sequential(
-                nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1), nn.ReLU(),
-                nn.Conv2d(512, self.feat_dim, kernel_size=1, stride=1, padding=0))
+                nn.Conv2d(512, self.feat_dim, kernel_size=3, stride=1, padding=1), nn.ReLU(),
+                nn.Conv2d(self.feat_dim, self.feat_dim, kernel_size=1, stride=1, padding=0))
         self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
-        self.encoder = nn.Sequential(nn.Linear(3,256),nn.ReLU(),nn.Linear(256,self.feat_dim))
+        self.encoder = nn.Sequential(nn.Linear(3, 256), nn.ReLU(), nn.Linear(256, self.feat_dim))
         self.residual = nn.Sequential(
-                nn.Conv2d(3, 128, kernel_size=1), nn.ReLU(),
-                nn.Conv2d(128, self.feat_dim, kernel_size=1))
-
+                nn.Conv2d(3, 128, kernel_size=9, padding=4), nn.ReLU(),
+                nn.Conv2d(128, self.feat_dim, kernel_size=3, padding=1))
         self.graph = nn.Sequential(
-                GraphAttn(in_features=512, out_features=256, alpha=0.9), nn.ReLU(),
-                GraphAttn(in_features=256, out_features=256, alpha=0.9))
+                GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9), nn.ReLU(),
+                GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9))
 
     def forward(self, inputs):
 
@@ -133,7 +130,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    net = FeatureNet().to(args.device).eval()
+    net = FeatureNet(512, 1000).to(args.device).eval()
     inputs = torch.randn(args.batch_size,3,*args.crop_size).to(args.device)
 
     start = time.time()
