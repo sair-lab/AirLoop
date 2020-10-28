@@ -4,7 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import project_points
+from kornia import PinholeCamera, DepthWarper, denormalize_pixel_coordinates
+
+from utils import PairwiseProjector
 
 # TEMP
 import cv2
@@ -14,18 +16,35 @@ vis = Visualization('src->tgt')
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, lamb_dist=1):
+    def __init__(self, height, width, lamb_dist=1, lamb_sproj=1, K=None):
         super().__init__()
-        self.distinctloss = DistinctivenessLoss()
+
+        self.distinct_loss = DistinctivenessLoss()
+        self.score_proj_loss = ScoreProjectionLoss()
+
         self.lamb_dist = lamb_dist
+        self.lamb_sproj = lamb_sproj
 
-    def forward(self, features, points, scores_dense, depths_dense, poses, K, K_inv, imgs):
-        scores = [scores_dense[b, 0, p[:, 0], p[:, 1]]
-                  for b, p in enumerate(points)]
-        depths = [depths_dense[b, 0, p[:, 0], p[:, 1]]
-                  for b, p in enumerate(points)]
+        self.projector = PairwiseProjector(width, height, K)
 
-        total_loss = self.lamb_dist * self.distinctloss(features, scores)
+    def forward(self, features, points, scores_dense, depths_dense, poses, K, imgs):
+        scores = F.grid_sample(scores_dense, points[:, None],
+                               align_corners=False).squeeze()
+
+        proj_pts, occ_idx = self.projector(points, depths_dense, poses, K)
+        # TEMP
+        # for dbgpts in proj_pts:
+        #     vis.show(imgs, dbgpts)
+        #     while cv2.waitKey() != ord('n'):
+        #         pass
+        # TEMP
+
+        score_dist_loss = self.distinct_loss(features, scores)
+        score_proj_loss = self.score_proj_loss(
+            scores_dense, scores, proj_pts, occ_idx)
+
+        total_loss = self.lamb_dist * score_dist_loss + \
+            self.lamb_sproj * score_proj_loss
 
         return total_loss
 
@@ -37,6 +56,7 @@ class DistinctivenessLoss(nn.Module):
         self.eps = eps
 
     def forward(self, features, scores):
+        # TODO remove loop
         score_dist_loss = 0
         for feature, score in zip(features, scores):
             feature = F.normalize(feature, eps=self.eps)
@@ -49,46 +69,25 @@ class DistinctivenessLoss(nn.Module):
         return score_dist_loss
 
 
-# Deprecate
-def training_criterion(features, points, scores_dense, depths_dense, poses, K, K_inv, imgs):
-    img_boudnary = torch.tensor(
-        [[0, 0], torch.tensor(scores_dense.shape[2:4]) - 1]).to(scores_dense)
+class ScoreProjectionLoss(nn.Module):
+    def __init__(self):
+        super(ScoreProjectionLoss, self).__init__()
+        self.mseloss = nn.MSELoss()
 
-    score_proj_loss = 0
-    # project points in every frame to every other frame
-    for src, (src_pts, src_d, src_T, src_scores_all) in enumerate(zip(points, depths, poses, scores)):
-        # TEMP
-        dbgpts = [src_pts]
-        images = [imgs[src]]
-        # TEMP
-        for tgt in range(len(points)):
-            if src == tgt:
-                continue
+    def forward(self, scores_dense, scores_src, proj_pts, occ_idx):
+        # scores_src: (Bs, N), scores_dense: (Bd, 1, H, W)
+        Bs, Bd, N, _ = proj_pts.shape
 
-            tgt_scores_dense = scores_dense[tgt]
-            tgt_T = poses[tgt]
-            tgt_pts, covis_idx = project_points(
-                src_pts, src_d, src_T, tgt_T, K, K_inv, trim_boundary=img_boudnary)
+        # (Bd, Bs, N)
+        scores_dst = F.grid_sample(scores_dense, proj_pts.transpose(0, 1),
+                                   align_corners=False).squeeze()
+        # (Bd, Bs, N)
+        scores_src_dup = scores_src[None, :].expand(Bd, Bs, N)
 
-            # TEMP
-            dbgpts.append(tgt_pts)
-            print(tgt)
-            images.append(imgs[tgt])
-            # TEMP
+        # TODO occ_idx
+        score_proj_loss = self.mseloss(scores_dst, scores_src_dup)
 
-            tgt_pts = (2 * tgt_pts / img_boudnary[1] - 1).view(1, 1, -1, 2)
-            tgt_scores = F.grid_sample(
-                tgt_scores_dense.unsqueeze(0), tgt_pts, align_corners=True).squeeze()
-
-            score_proj_loss += F.mse_loss(src_scores_all[covis_idx], tgt_scores)
-
-        # TEMP
-        vis.show(torch.stack(images), dbgpts)
-        while cv2.waitKey() != ord('n'):
-            pass
-        # TEMP
-
-    return score_dist_loss, score_proj_loss
+        return score_proj_loss
 
 
 def reproj_error(p, d_p, T_p, T_q, q, K, K_inv=None, red='none'):
@@ -104,17 +103,3 @@ def reproj_error(p, d_p, T_p, T_q, q, K, K_inv=None, red='none'):
       MSE(reproject(p), q).
     """
     return F.mse_loss(project_points(p, d_p, T_p, T_q, K, K_inv), q, reduction=red).sum(1)
-
-
-def descriptor_loss(D_p, D_q, is_inlier, red='none'):
-    """Computes loss on discriptors from matcher.
-
-    Args:
-      D_p, D_q: The descriptors  (N, D).
-      is_inlier: Is this pair a inliner (N)?
-      red:       Optional. Reduce to one number?
-
-    Returns:
-      cos_sim if is_inlier else max(cos_sim, 0).
-    """
-    return F.cosine_embedding_loss(D_p, D_q, is_inlier, reduction=red)
