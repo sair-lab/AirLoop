@@ -1,8 +1,72 @@
 #!/usr/bin/env python3
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+
+from kornia.geometry import PinholeCamera, DepthWarper, denormalize_pixel_coordinates
+
+
+class PairwiseProjector(nn.Module):
+    def __init__(self, width, height, K=None):
+        super(PairwiseProjector, self).__init__()
+
+        self.width, self.height = width, height
+        self.K = K
+
+    def forward(self, points, depths_dense, poses, K=None, occ_idx=True):
+        if K is not None:
+            self.K = K
+
+        B, N = points.shape[:2]
+
+        # TODO don't self-project
+
+        # [T0 T0 ... T1 T1 ...] vs [T0 T1 ... T0 T1 ...]
+        poses_src = poses.repeat_interleave(B, dim=0)
+        poses_dst = poses.repeat(B, 1, 1)
+
+        # (B, N, 2)
+        points_px = denormalize_pixel_coordinates(
+            points, self.height, self.width)
+        # (B, N)
+        depths = F.grid_sample(
+            depths_dense, points[:, None], align_corners=False).squeeze()
+
+        # (B**2, N, 2)
+        points_px_dup = self._batch_repeat(points_px)
+        # (B**2, N)
+        depths_dup = self._batch_repeat(depths)
+
+        cam_src = make_camera(self.width, self.height, self.K, poses_src, B**2)
+        cam_dst = make_camera(self.width, self.height, self.K, poses_dst, B**2)
+
+        # (B**2, N, 2)
+        proj_p = project_points(points_px_dup, depths_dup,
+                                cam_src, cam_dst)
+
+        if occ_idx:
+            in_boundary = torch.all((proj_p >= -1) & (proj_p <= 1), dim=-1)
+
+            depths_dense_dst = self._batch_repeat(depths_dense)
+            depths_dst = F.grid_sample(depths_dense_dst, proj_p[:, None],
+                                       align_corners=False).squeeze()
+            # TODO compare with projected depth
+
+            visible_idx = torch.nonzero(in_boundary, as_tuple=True)
+
+            return proj_p.reshape(B, B, N, 2), visible_idx
+        else:
+            return proj_p.reshape(B, B, N, 2)
+
+    @staticmethod
+    def _batch_repeat(x):
+        """Duplicate along batch for batch_size times"""
+        B, shape = x.shape[0], x.shape[1:]
+        return x[:, None].expand(B, B, *shape).reshape(B**2, *shape)
 
 
 def pose2mat(pose):
@@ -20,71 +84,38 @@ def pose2mat(pose):
     return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)
 
 
-def pix2world(p, depth, T_p, K_inv):
-    """Transforms from pixel coordinates to world frame.
+def make_camera(width, height, K, pose, batch_size=1):
+    """Creates a PinholeCamera with specified info"""
+    intrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)
+    intrinsics[:, 0:3, 0:3] = K
 
-    Args:
-      p:     Pixel coordinates (N, 2).
-      depth: Depth of each point (N).
-      T_p:   Camera poses in which p is observed (N, 3, 4).
-      K_inv: Inverse of camera intrinsics (N, 3, 3).
+    extrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)
+    extrinsics[:, 0:3, 0:4] = pose
 
-    Returns:
-      Coordinates in world frame (N, 3).
-    """
-    N = len(p)
+    height, width = torch.tensor([height]).to(K), torch.tensor([width]).to(K)
 
-    p_h = torch.cat([p, torch.ones(N, 1, device=p.get_device())], 1).unsqueeze(2)
-    p_cam = (K_inv @ p_h) * depth.reshape(N, 1, 1)
-    # T_p^-1 * p_cam
-    T_p = T_p.unsqueeze(0) if len(T_p.shape) == 2 else T_p
-    R, t = T_p[:, :, :3], T_p[:, :, 3].unsqueeze(2)
-    p_world_h = (R.transpose(1, 2) @ (p_cam - t)).squeeze(2)
-    return p_world_h
+    return PinholeCamera(intrinsics, extrinsics, height, width)
 
 
-def world2pix(p, T_p, K):
-    """Transforms world frame to pixel coordinates.
-
-    Args:
-      p:   World coordinates (N, 3).
-      T_p: Camera poses in which p is observed (N, 3, 4).
-      K:   Camera intrinsics (N, 3, 3).
-
-    Returns:
-      Pixel corrdinates (N, 2).
-    """
-    N = len(p)
-
-    p_h = torch.cat([p, torch.ones(N, 1, device=p.get_device())], 1).unsqueeze(2)
-    p_cam_h = T_p @ p_h
-    pix_h = (K @ p_cam_h).squeeze(2)
-    return pix_h[:, :2] / pix_h[:, 2].unsqueeze(1)
-
-
-def project_points(p, depth, T_p, T_q, K, K_inv=None, trim_boundary=None):
+def project_points(p, depth_src, cam_src, cam_dst):
     """Projects p visible in pose T_p to pose T_q.
 
     Args:
-      p:     List of points (N, 2).
-      depth: Depth of each point(N).
-      T_p:   List of camera poses in which p is observed (3, 4) or (N, 3, 4).
-      T_q:   List of camera poses to project into (3, 4) or (N, 3, 4).
-      K:     Camera intrinsics (3, 3) or (N, 3, 3).
-      K_inv: Optional; precomputed inverse of K (3, 3) or (N, 3, 3).
+      p:                List of points in pixels (B, N, 2).
+      depth:            Depth of each point(B, N).
+      cam_src, cam_dst: Source and destination cameras with batch size B
 
     Returns:
-      Coordinates of p in pose T_q (N, 2).
+      Normalized coordinates of p in pose cam_dst (N, 2).
     """
-    world_coord = pix2world(p, depth, T_p,
-                            K_inv if K_inv is not None else torch.inverse(K))
-    projected = world2pix(world_coord, T_q, K)
-    if trim_boundary is not None:
-        trim_boundary = trim_boundary.to(projected)
-        visible_idx = torch.nonzero(
-            torch.all((projected >= trim_boundary[0]) &
-                      (projected <= trim_boundary[1]), dim=1),
-            as_tuple=True)[0]
-        return projected[visible_idx], visible_idx
-    else:
-        return projected
+    b, n, _ = p.shape
+    assert b == cam_src.batch_size == cam_dst.batch_size
+
+    warper = DepthWarper(cam_dst,
+                         int(cam_dst.height.item()),
+                         int(cam_dst.width.item())).to(p)
+    # (B, 1, N, 3)
+    warper.grid = torch.cat([p, torch.ones(b, n, 1).to(p)], dim=2)[:, None]
+    warper.compute_projection_matrix(cam_src)
+    projected = warper.warp_grid(depth_src.view(b, 1, 1, n)).squeeze()
+    return projected
