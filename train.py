@@ -86,7 +86,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    image_transform = T.Compose([T.Resize(args.res), lambda img: np.array(img), T.ToTensor()])
+    image_transform = T.Compose([T.Resize(args.res), T.ToTensor()])
     depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
 
     train_data = TartanAir(root=args.data_root, train=True, img_transform=image_transform, depth_transform=depth_transform)
