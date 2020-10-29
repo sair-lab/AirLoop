@@ -40,33 +40,25 @@ class FeatureNetLoss(nn.Module):
         # TEMP
 
         score_dist_loss = self.distinct_loss(features, scores)
-        score_proj_loss = self.score_proj_loss(
-            scores_dense, scores, proj_pts, occ_idx)
+        score_proj_loss = self.score_proj_loss(scores_dense, scores, proj_pts, occ_idx)
 
-        total_loss = self.lamb_dist * score_dist_loss + \
-            self.lamb_sproj * score_proj_loss
+        total_loss = self.lamb_dist * score_dist_loss + self.lamb_sproj * score_proj_loss
 
         return total_loss
 
 
 class DistinctivenessLoss(nn.Module):
-    def __init__(self, eps=1e-8):
+    def __init__(self):
         super(DistinctivenessLoss, self).__init__()
         self.bceloss = nn.BCELoss()
-        self.eps = eps
+        self.relu = nn.ReLU()
 
     def forward(self, features, scores):
-        # TODO remove loop
-        score_dist_loss = 0
-        for feature, score in zip(features, scores):
-            feature = F.normalize(feature, eps=self.eps)
-            sum_feature = feature.sum(dim=0)
-            # ave_cos_sim_i = (sum_{j != i} f_i' * f_j) / (n - 1) = ((f_i' * sum_j f_j) - 1) / (n - 1)
-            ave_cossim = (feature @ sum_feature.T - 1) / (len(feature) - 1)
-            score_dist_loss += self.bceloss(score,
-                                            (1 - F.relu(ave_cossim)).detach())
-
-        return score_dist_loss
+        features = F.normalize(features, dim=-1).detach()
+        summation = features.sum(dim=1, keepdim=True).transpose(1, 2)
+        similarity = (features@summation - 1)/(features.size(1) - 1)
+        targets = 1 - self.relu(similarity).squeeze(-1)
+        return self.bceloss(scores, targets)
 
 
 class ScoreProjectionLoss(nn.Module):
@@ -79,8 +71,7 @@ class ScoreProjectionLoss(nn.Module):
         Bs, Bd, N, _ = proj_pts.shape
 
         # (Bd, Bs, N)
-        scores_dst = F.grid_sample(scores_dense, proj_pts.transpose(0, 1),
-                                   align_corners=False).squeeze()
+        scores_dst = F.grid_sample(scores_dense, proj_pts.transpose(0, 1), align_corners=False).squeeze()
         # (Bd, Bs, N)
         scores_src_dup = scores_src[None, :].expand(Bd, Bs, N)
 
