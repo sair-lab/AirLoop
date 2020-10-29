@@ -7,17 +7,18 @@ import torch.nn.functional as F
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from kornia.geometry import PinholeCamera, DepthWarper, denormalize_pixel_coordinates
+import kornia.geometry as G
 
 
 class PairwiseProjector(nn.Module):
-    def __init__(self, width, height, K=None):
+    def __init__(self, width, height, K=None, depth_occ_eps=1e-2):
         super(PairwiseProjector, self).__init__()
 
         self.width, self.height = width, height
         self.K = K
+        self.depth_occ_eps = depth_occ_eps
 
-    def forward(self, points, depths_dense, poses, K=None, occ_idx=True):
+    def forward(self, points, depths_dense, poses, K=None, ret_invis_idx=True):
         if K is not None:
             self.K = K
 
@@ -30,7 +31,7 @@ class PairwiseProjector(nn.Module):
         poses_dst = poses.repeat(B, 1, 1)
 
         # (B, N, 2)
-        points_px = denormalize_pixel_coordinates(
+        points_px = G.denormalize_pixel_coordinates(
             points, self.height, self.width)
         # (B, N)
         depths = F.grid_sample(
@@ -45,26 +46,27 @@ class PairwiseProjector(nn.Module):
         cam_dst = make_camera(self.width, self.height, self.K, poses_dst, B**2)
 
         # (B**2, N, 2)
-        proj_p = project_points(points_px_dup, depths_dup,
-                                cam_src, cam_dst)
+        proj_p, proj_depth = project_points(points_px_dup, depths_dup, cam_src, cam_dst)
 
-        if occ_idx:
-            in_boundary = torch.all((proj_p >= -1) & (proj_p <= 1), dim=-1)
+        if ret_invis_idx:
+            is_out_of_bound = torch.all((proj_p < -1) & (proj_p > 1), dim=-1)
 
-            depths_dense_dst = self._batch_repeat(depths_dense)
-            depths_dst = F.grid_sample(depths_dense_dst, proj_p[:, None],
-                                       align_corners=False).squeeze()
-            # TODO compare with projected depth
+            H, W = depths_dense.shape[2:4]
+            depths_dense_dup = depths_dense.expand(B, B, H, W).transpose(0, 1).reshape(B**2, 1, H, W)
+            depths_dst = F.grid_sample(depths_dense_dup, proj_p[:, None], align_corners=False).squeeze()
+            is_occluded = proj_depth > depths_dst + self.depth_occ_eps
 
-            visible_idx = torch.nonzero(in_boundary, as_tuple=True)
+            pair_idx, point_idx = torch.nonzero(is_out_of_bound | is_occluded, as_tuple=True)
 
-            return proj_p.reshape(B, B, N, 2), visible_idx
+            invis_idx = torch.stack([pair_idx // B, pair_idx % B, point_idx])
+
+            return proj_p.reshape(B, B, N, 2), invis_idx
         else:
             return proj_p.reshape(B, B, N, 2)
 
     @staticmethod
     def _batch_repeat(x):
-        """Duplicate along batch for batch_size times"""
+        """[b0 b1 b2 ...] -> [b0 b0 ... b1 b1 ...]"""
         B, shape = x.shape[0], x.shape[1:]
         return x[:, None].expand(B, B, *shape).reshape(B**2, *shape)
 
@@ -94,7 +96,7 @@ def make_camera(width, height, K, pose, batch_size=1):
 
     height, width = torch.tensor([height]).to(K), torch.tensor([width]).to(K)
 
-    return PinholeCamera(intrinsics, extrinsics, height, width)
+    return G.PinholeCamera(intrinsics, extrinsics, height, width)
 
 
 def project_points(p, depth_src, cam_src, cam_dst):
@@ -111,11 +113,48 @@ def project_points(p, depth_src, cam_src, cam_dst):
     b, n, _ = p.shape
     assert b == cam_src.batch_size == cam_dst.batch_size
 
-    warper = DepthWarper(cam_dst,
-                         int(cam_dst.height.item()),
-                         int(cam_dst.width.item())).to(p)
-    # (B, 1, N, 3)
-    warper.grid = torch.cat([p, torch.ones(b, n, 1).to(p)], dim=2)[:, None]
+    warper = G.DepthWarper(cam_dst, int(cam_dst.height.item()), int(cam_dst.width.item())).to(p)
     warper.compute_projection_matrix(cam_src)
-    projected = warper.warp_grid(depth_src.view(b, 1, 1, n)).squeeze()
-    return projected
+    # (B, 1, N, 3)
+    pix_coords = torch.cat([p, torch.ones(b, n, 1).to(p)], dim=2)[:, None]
+    projected, proj_depth = warp_grid(warper, pix_coords, depth_src.view(b, 1, 1, n))
+    return projected.squeeze(), proj_depth.squeeze()
+
+
+def warp_grid(warper, pixel_coords, depth_src):
+    """Adapted from kornia.geometry.warp.depth_warper."""
+    # unpack depth attributes
+    dtype = depth_src.dtype
+
+    # reproject the pixel coordinates to the camera frame
+    cam_coords_src = G.pixel2cam(
+        depth_src,
+        warper._pinhole_src.intrinsics_inverse().to(dtype),
+        pixel_coords)  # BxHxWx3
+
+    # reproject the camera coordinates to the pixel
+    pixel_coords_src, z_coord = _cam2pixel(
+        cam_coords_src, warper._dst_proj_src.to(dtype))  # (B*N)xHxWx2
+
+    # normalize between -1 and 1 the coordinates
+    pixel_coords_src_norm = G.normalize_pixel_coordinates(
+        pixel_coords_src, warper.height, warper.width)
+
+    return pixel_coords_src_norm, z_coord
+
+
+def _cam2pixel(cam_coords_src, dst_proj_src, eps=1e-6):
+    """Adapted from kornia.geometry.camera.pinhole."""
+    # apply projection matrix to points
+    point_coords = G.transform_points(dst_proj_src[:, None], cam_coords_src)
+    x_coord = point_coords[..., 0]
+    y_coord = point_coords[..., 1]
+    z_coord = point_coords[..., 2]
+
+    # compute pixel coordinates
+    u_coord = x_coord / (z_coord + eps)
+    v_coord = y_coord / (z_coord + eps)
+
+    # stack and return the coordinates, that's the actual flow
+    pixel_coords_dst = torch.stack([u_coord, v_coord], dim=-1)
+    return pixel_coords_dst, z_coord  # (B*N)xHxWx2

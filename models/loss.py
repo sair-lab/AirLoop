@@ -28,19 +28,21 @@ class FeatureNetLoss(nn.Module):
         self.projector = PairwiseProjector(width, height, K)
 
     def forward(self, features, points, scores_dense, depths_dense, poses, K, imgs):
-        scores = F.grid_sample(scores_dense, points[:, None],
-                               align_corners=False).squeeze()
+        scores = F.grid_sample(scores_dense, points[:, None], align_corners=False).squeeze()
 
-        proj_pts, occ_idx = self.projector(points, depths_dense, poses, K)
+        proj_pts, invis_idx = self.projector(points, depths_dense, poses, K)
         # TEMP
-        # for dbgpts in proj_pts:
+        # src_idx, dst_idx, pts_idx = invis_idx
+        # _proj_pts = proj_pts.clone()
+        # _proj_pts[src_idx, dst_idx, pts_idx, :] = -2
+        # for dbgpts in _proj_pts:
         #     vis.show(imgs, dbgpts)
         #     while cv2.waitKey() != ord('n'):
         #         pass
         # TEMP
 
         score_dist_loss = self.distinct_loss(features, scores)
-        score_proj_loss = self.score_proj_loss(scores_dense, scores, proj_pts, occ_idx)
+        score_proj_loss = self.score_proj_loss(scores_dense, scores, proj_pts, invis_idx)
 
         total_loss = self.lamb_dist * score_dist_loss + self.lamb_sproj * score_proj_loss
 
@@ -64,9 +66,9 @@ class DistinctivenessLoss(nn.Module):
 class ScoreProjectionLoss(nn.Module):
     def __init__(self):
         super(ScoreProjectionLoss, self).__init__()
-        self.mseloss = nn.MSELoss()
+        self.mseloss = nn.MSELoss(reduction='none')
 
-    def forward(self, scores_dense, scores_src, proj_pts, occ_idx):
+    def forward(self, scores_dense, scores_src, proj_pts, invis_idx):
         # scores_src: (Bs, N), scores_dense: (Bd, 1, H, W)
         Bs, Bd, N, _ = proj_pts.shape
 
@@ -75,8 +77,11 @@ class ScoreProjectionLoss(nn.Module):
         # (Bd, Bs, N)
         scores_src_dup = scores_src[None, :].expand(Bd, Bs, N)
 
-        # TODO occ_idx
         score_proj_loss = self.mseloss(scores_dst, scores_src_dup)
+
+        src_idx, dst_idx, pts_idx = invis_idx
+        score_proj_loss[src_idx, dst_idx, pts_idx] = 0
+        score_proj_loss = score_proj_loss.mean()
 
         return score_proj_loss
 
