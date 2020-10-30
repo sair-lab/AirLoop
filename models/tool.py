@@ -6,12 +6,14 @@ import torch
 
 class Timer:
     def __init__(self):
+        torch.cuda.synchronize()
         self.start_time = time.time()
 
     def tic(self):
         self.start()
 
     def show(self, prefix="", output=True):
+        torch.cuda.synchronize()
         duration = time.time()-self.start_time
         if output:
             print(prefix+"%fs" % duration)
@@ -23,9 +25,11 @@ class Timer:
         return self.duration
 
     def start(self):
+        torch.cuda.synchronize()
         self.start_time = time.time()
 
     def end(self):
+        torch.cuda.synchronize()
         self.duration = time.time()-self.start_time
         self.start()
         return self.duration
