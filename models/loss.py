@@ -10,13 +10,14 @@ from kornia import PinholeCamera, DepthWarper
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, alpha=[1,1,1], K=None, debug=True):
+    def __init__(self, alpha=[1, 1, 1], K=None, debug=False):
         super().__init__()
         self.alpha = alpha
         self.sample = GridSample()
         self.distinction = DistinctionLoss()
         self.projection = ScoreProjectionLoss()
         self.projector = PairwiseProjector(K)
+        self.match = DiscriptorMatchLoss(debug=debug)
         self.debug = Visualization('loss') if debug else debug
 
     def forward(self, features, points, scores_dense, depths_dense, poses, K, imgs):
@@ -24,6 +25,7 @@ class FeatureNetLoss(nn.Module):
         distinction = self.distinction(features, scores)
         proj_pts, invis_idx = self.projector(points, depths_dense, poses, K)
         projection = self.projection(scores_dense, scores, proj_pts, invis_idx)
+        match = self.match(features, points, proj_pts, invis_idx, *scores_dense.shape[2:4])
 
         if self.debug is not False:
             src_idx, dst_idx, pts_idx = invis_idx
@@ -32,7 +34,7 @@ class FeatureNetLoss(nn.Module):
             for dbgpts in _proj_pts:
                 self.debug.show(imgs, dbgpts)
 
-        return self.alpha[0]*distinction + self.alpha[1]*projection
+        return self.alpha[0] * distinction + self.alpha[1] * projection + self.alpha[2] * match
 
 
 class DistinctionLoss(nn.Module):
@@ -62,3 +64,44 @@ class ScoreProjectionLoss(nn.Module):
         src_idx, dst_idx, pts_idx = invis_idx
         proj_loss[src_idx, dst_idx, pts_idx] = 0
         return proj_loss.mean()
+
+
+class DiscriptorMatchLoss(nn.Module):
+    def __init__(self, radius_thresh=1, debug=False):
+        super(DiscriptorMatchLoss, self).__init__()
+        self.match = GridMatch()
+        self.similarity = nn.CosineSimilarity()
+        self.thresh = radius_thresh
+        self.debug = debug
+
+    def forward(self, features, points, proj_pts, invis_idx, height, width):
+        # TEMP
+        import time
+        start = time.time()
+        for _ in range(1000):
+            # match_loss = self.forward1(features, points, proj_pts, invis_idx, height, width)
+            match_loss = self.forward2(features, points, proj_pts, invis_idx, height, width)
+        print((time.time() - start) / 1000)
+        # TEMP
+
+        return match_loss
+
+    def forward2(self, features, points, proj_pts, invis_idx, height, width):
+        B, N, _ = points.shape
+
+        points = denormalize_pixel_coordinates(points.detach(), height, width)
+        proj_pts = denormalize_pixel_coordinates(proj_pts.detach(), height, width)
+
+        points = points.unsqueeze(1).expand_as(proj_pts).reshape(B**2, N, 2)
+        proj_pts = proj_pts.reshape_as(points)
+
+        dist = torch.cdist(points, proj_pts)
+        match_idx = torch.nonzero((dist <= self.thresh).triu(), as_tuple=True)
+
+        points_b_n, proj_pts_b_n = [match_idx[0] % B, match_idx[1]], [match_idx[0] // B, match_idx[2]]
+        if self.debug:
+            for b, n, b1, n1 in zip(points_b_n[0], points_b_n[1], proj_pts_b_n[0], proj_pts_b_n[1]):
+                print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
+        match_loss = (1 - self.similarity(features[points_b_n], features[proj_pts_b_n])).sum()
+
+        return match_loss
