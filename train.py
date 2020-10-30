@@ -25,8 +25,8 @@ def test(net, loader, args=None):
     net.eval()
     vis = Visualization('test')
     with torch.no_grad():
-        for idx, (image) in enumerate(tqdm.tqdm(loader)):
-            image = image.to(args.device)
+        for idx, (image, K) in enumerate(tqdm.tqdm(loader)):
+            image, K = image.to(args.device), K.to(args.device)
             descriptors, points, scores = net(image)
             # evaluation script
             if args.visualize:
@@ -36,29 +36,24 @@ def test(net, loader, args=None):
 
 def train(net, loader, criterion, optimizer, args=None):
     net.train()
+    train_loss, batches = 0, len(loader)
     vis = Visualization('train', args.debug)
-    for idx, (images, depths, poses) in enumerate(tqdm.tqdm(loader)):
-        images, depths, poses = images.to(args.device), depths.to(args.device), poses.to(args.device)
+    enumerater = tqdm.tqdm(enumerate(loader))
+    for idx, (images, depths, poses, K) in enumerater:
+        images = images.to(args.device)
+        depths = depths.to(args.device)
+        poses = poses.to(args.device)
+        K = K.to(args.device)
+        optimizer.zero_grad()
         descriptors, points, pointness = net(images)
-
-        # TEMP
-        fx = 320.0 / 2
-        fy = 320.0 / 2
-        cx = 320.0 / 2
-        cy = 240.0 / 2
-
-        K = torch.tensor([[fx, 0, cx],
-                          [0, fy, cy],
-                          [0, 0, 1]]).to(images)
-
         loss = criterion(descriptors, points, pointness, depths, poses, K, images)
         loss.backward()
-        # TEMP
-
-        # loss and evaluation script
+        optimizer.step()
+        train_loss += loss.item()
+        enumerater.set_description("Loss: %.4f on %d/%d"%(train_loss/(idx+1), idx+1, batches))
         if args.visualize:
             vis.show(images, points)
-    return 0.9 # accuracy
+    return train_loss/(idx+1)
 
 
 if __name__ == "__main__":

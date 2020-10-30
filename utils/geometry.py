@@ -85,7 +85,7 @@ def pose2mat(pose):
 def make_camera(height, width, K, pose, batch_size=1):
     """Creates a PinholeCamera with specified info"""
     intrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)
-    intrinsics[:, 0:3, 0:3] = K
+    intrinsics[:, 0:3, 0:3] = K.repeat(K.size(0),1,1)
 
     extrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)
     extrinsics[:, 0:3, 0:4] = pose
