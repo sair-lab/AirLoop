@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-
+import torch.nn as nn
 import kornia.geometry as G
+import torch.nn.functional as F
+from scipy.spatial.transform import Rotation as R
 
 
 class PairwiseProjector(nn.Module):
-    def __init__(self, width, height, K=None, depth_occ_eps=1e-2):
-        super(PairwiseProjector, self).__init__()
-
-        self.width, self.height = width, height
-        self.K = K
-        self.depth_occ_eps = depth_occ_eps
+    def __init__(self, K=None, eps=1e-2):
+        super().__init__()
+        self.K, self.eps = K, eps
 
     def forward(self, points, depths_dense, poses, K=None, ret_invis_idx=True):
         if K is not None:
             self.K = K
 
         B, N = points.shape[:2]
+        H, W = depths_dense.shape[2:]
 
         # TODO don't self-project
 
@@ -30,20 +26,20 @@ class PairwiseProjector(nn.Module):
         poses_src = poses.repeat_interleave(B, dim=0)
         poses_dst = poses.repeat(B, 1, 1)
 
-        # (B, N, 2)
-        points_px = G.denormalize_pixel_coordinates(
-            points, self.height, self.width)
         # (B, N)
-        depths = F.grid_sample(
-            depths_dense, points[:, None], align_corners=False).squeeze()
+        depths = F.grid_sample(depths_dense, points[:, None], align_corners=False).squeeze()
+
+        # (B, N, 2)
+        points_px = G.denormalize_pixel_coordinates(points, H, W)
+
 
         # (B**2, N, 2)
         points_px_dup = self._batch_repeat(points_px)
         # (B**2, N)
         depths_dup = self._batch_repeat(depths)
 
-        cam_src = make_camera(self.width, self.height, self.K, poses_src, B**2)
-        cam_dst = make_camera(self.width, self.height, self.K, poses_dst, B**2)
+        cam_src = make_camera(H, W, self.K, poses_src, B**2)
+        cam_dst = make_camera(H, W, self.K, poses_dst, B**2)
 
         # (B**2, N, 2)
         proj_p, proj_depth = project_points(points_px_dup, depths_dup, cam_src, cam_dst)
@@ -54,15 +50,15 @@ class PairwiseProjector(nn.Module):
             H, W = depths_dense.shape[2:4]
             depths_dense_dup = depths_dense.expand(B, B, H, W).transpose(0, 1).reshape(B**2, 1, H, W)
             depths_dst = F.grid_sample(depths_dense_dup, proj_p[:, None], align_corners=False).squeeze()
-            is_occluded = proj_depth > depths_dst + self.depth_occ_eps
+            is_occluded = proj_depth > depths_dst + self.eps
 
             pair_idx, point_idx = torch.nonzero(is_out_of_bound | is_occluded, as_tuple=True)
 
             invis_idx = torch.stack([pair_idx // B, pair_idx % B, point_idx])
 
-            return proj_p.reshape(B, B, N, 2), invis_idx
+            return proj_p.reshape(B, B, N, 2).transpose(0, 1), invis_idx
         else:
-            return proj_p.reshape(B, B, N, 2)
+            return proj_p.reshape(B, B, N, 2).transpose(0, 1)
 
     @staticmethod
     def _batch_repeat(x):
@@ -86,7 +82,7 @@ def pose2mat(pose):
     return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)
 
 
-def make_camera(width, height, K, pose, batch_size=1):
+def make_camera(height, width, K, pose, batch_size=1):
     """Creates a PinholeCamera with specified info"""
     intrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)
     intrinsics[:, 0:3, 0:3] = K

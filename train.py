@@ -69,7 +69,9 @@ if __name__ == "__main__":
     parser.add_argument("--data-root", type=str, default='data/office2 tiny', help="data location")
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
-    parser.add_argument('--res', nargs='+', type=int, default=[240,320], help='image resolution after resize')
+    parser.add_argument("--feat-dim", type=int, default=512, help="feature dimension")
+    parser.add_argument("--feat-num", type=int, default=500, help="feature number")
+    parser.add_argument('--resize', nargs='+', type=int, default=[240,320], help='image resize')
     parser.add_argument("--lr", type=float, default=0.01, help="learning rate")
     parser.add_argument("--min-lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--factor", type=float, default=0.1, help="factor of lr")
@@ -86,16 +88,16 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    image_transform = T.Compose([T.Resize(args.res), T.ToTensor()])
+    image_transform = T.Compose([T.Resize(args.resize), T.ToTensor()])
     depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
 
     train_data = TartanAir(root=args.data_root, train=True, img_transform=image_transform, depth_transform=depth_transform)
-    train_loader = Data.DataLoader(train_data, args.batch_size, True)
+    train_loader = Data.DataLoader(train_data, args.batch_size, False)
     test_data = TartanAir(root=args.data_root, train=False, img_transform=image_transform)
     test_loader = Data.DataLoader(test_data, args.batch_size, False)
 
-    criterion = FeatureNetLoss(*args.res)
-    net = FeatureNet().to(args.device) if args.load is None else torch.load(args.load, args.device)
+    criterion = FeatureNetLoss()
+    net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
 
