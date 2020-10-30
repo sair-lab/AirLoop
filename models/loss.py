@@ -57,7 +57,7 @@ class ScoreProjectionLoss(nn.Module):
 
     def forward(self, scores_dense, scores_src, proj_pts, invis_idx):
         scores_dst = self.sample((scores_dense, proj_pts))
-        scores_src = scores_src.unsqueeze(0).expand_as(scores_dst)
+        scores_src = scores_src.unsqueeze(1).expand_as(scores_dst)
         proj_loss = self.mseloss(scores_dst, scores_src)
         src_idx, dst_idx, pts_idx = invis_idx
         proj_loss[src_idx, dst_idx, pts_idx] = 0
