@@ -37,6 +37,14 @@ class DatasetBase(VisionDataset):
         self.train = train
         self.img_transform = img_transform
         self.depth_transform = depth_transform
+        
+        # TEMP
+        fx = 320.0 / 2
+        fy = 320.0 / 2
+        cx = 320.0 / 2
+        cy = 240.0 / 2
+        self.K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+        # TEMP
 
     def _dump_dir(self, directory, exts, sort=True):
         files = []
@@ -64,9 +72,9 @@ class DatasetBase(VisionDataset):
             depth = self.load_depth(self.depth_files[index])
             depth = self.depth_transform(depth) if self.depth_transform else depth
             pose = self.poses[index]
-            return image, depth, pose
+            return image, depth, pose, self.K
         else:
-            return image
+            return image, self.K
 
 
 class TartanAir(DatasetBase):
@@ -82,4 +90,7 @@ class TartanAir(DatasetBase):
     def load_poses(self, pose_file):
         poses7 = np.loadtxt(pose_file).astype(np.float32)
         assert(poses7.shape == (self.size, 7))  # position + quaternion
-        return pose2mat(poses7)
+        ned2den = torch.tensor([[0, 1, 0],
+                                [0, 0, 1],
+                                [1, 0, 0]]).to(dtype=torch.float32)
+        return ned2den @ pose2mat(poses7)

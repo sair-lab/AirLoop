@@ -16,6 +16,7 @@ from torchvision import transforms as T
 from utils import Visualization
 from datasets import TartanAir
 from models import FeatureNet
+from models import FeatureNetLoss
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
 
@@ -24,8 +25,8 @@ def test(net, loader, args=None):
     net.eval()
     vis = Visualization('test')
     with torch.no_grad():
-        for idx, (image) in enumerate(tqdm.tqdm(loader)):
-            image = image.to(args.device)
+        for idx, (image, K) in enumerate(tqdm.tqdm(loader)):
+            image, K = image.to(args.device), K.to(args.device)
             descriptors, points, scores = net(image)
             # evaluation script
             if args.visualize:
@@ -35,14 +36,24 @@ def test(net, loader, args=None):
 
 def train(net, loader, criterion, optimizer, args=None):
     net.train()
+    train_loss, batches = 0, len(loader)
     vis = Visualization('train', args.debug)
-    for idx, (images, depths, poses) in enumerate(tqdm.tqdm(loader)):
-        images, depths, poses = images.to(args.device), depths.to(args.device), poses.to(args.device)
+    enumerater = tqdm.tqdm(enumerate(loader))
+    for idx, (images, depths, poses, K) in enumerater:
+        images = images.to(args.device)
+        depths = depths.to(args.device)
+        poses = poses.to(args.device)
+        K = K.to(args.device)
+        optimizer.zero_grad()
         descriptors, points, pointness = net(images)
-        # loss and evaluation script
+        loss = criterion(descriptors, points, pointness, depths, poses, K, images)
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item()
+        enumerater.set_description("Loss: %.4f on %d/%d"%(train_loss/(idx+1), idx+1, batches))
         if args.visualize:
             vis.show(images, points)
-    return 0.9 # accuracy
+    return train_loss/(idx+1)
 
 
 if __name__ == "__main__":
@@ -53,14 +64,16 @@ if __name__ == "__main__":
     parser.add_argument("--data-root", type=str, default='data/office2 tiny', help="data location")
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
-    parser.add_argument('--crop-size', nargs='+', type=int, default=[320,320], help='image crop')
+    parser.add_argument("--feat-dim", type=int, default=512, help="feature dimension")
+    parser.add_argument("--feat-num", type=int, default=500, help="feature number")
+    parser.add_argument('--resize', nargs='+', type=int, default=[240,320], help='image resize')
     parser.add_argument("--lr", type=float, default=0.01, help="learning rate")
     parser.add_argument("--min-lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--factor", type=float, default=0.1, help="factor of lr")
     parser.add_argument("--momentum", type=float, default=0.9, help="momentum of optim")
     parser.add_argument("--w-decay", type=float, default=0, help="weight decay of optim")
     parser.add_argument("--epoch", type=int, default=15, help="number of epoches")
-    parser.add_argument("--batch-size", type=int, default=10, help="minibatch size")
+    parser.add_argument("--batch-size", type=int, default=5, help="minibatch size")
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument('--visualize', dest='visualize', action='store_true')
@@ -70,16 +83,16 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    image_transform = T.Compose([T.ToTensor()])
-    depth_transform = T.Compose([T.ToPILImage(), image_transform])
+    image_transform = T.Compose([T.Resize(args.resize), T.ToTensor()])
+    depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
 
     train_data = TartanAir(root=args.data_root, train=True, img_transform=image_transform, depth_transform=depth_transform)
-    train_loader = Data.DataLoader(train_data, args.batch_size, True)
+    train_loader = Data.DataLoader(train_data, args.batch_size, False)
     test_data = TartanAir(root=args.data_root, train=False, img_transform=image_transform)
     test_loader = Data.DataLoader(test_data, args.batch_size, False)
 
-    criterion = nn.CrossEntropyLoss()
-    net = FeatureNet().to(args.device) if args.load is None else torch.load(args.load, args.device)
+    criterion = FeatureNetLoss()
+    net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
 

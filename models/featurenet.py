@@ -38,9 +38,10 @@ class GridSample(nn.Module):
 
     def forward(self, inputs):
         features, points = inputs
-        points = points.view(features.size(0),1,-1,2)
-        output = F.grid_sample(features, points, self.mode, align_corners=True)
-        return output.squeeze(2).permute(0,2,1)
+        dim = len(points.shape)
+        points = points.view(features.size(0),1,-1,2) if dim == 3 else points
+        output = F.grid_sample(features, points, self.mode, align_corners=True).permute(0,2,3,1)
+        return output.squeeze(1) if dim == 3 else output
 
 
 class GraphAttn(nn.Module):
