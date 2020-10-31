@@ -82,7 +82,7 @@ class DiscriptorMatchLoss(nn.Module):
         pts_src = pts_src.unsqueeze(1).expand_as(pts_dst).reshape(B**2, N, 2)
         pts_dst = pts_dst.reshape_as(pts_src)
 
-        idx = (torch.cdist(pts_src, pts_dst)<=self.radius).triu().nonzero().T
+        idx = (torch.cdist(pts_src, pts_dst)<=self.radius).triu(diagonal=1).nonzero(as_tuple=True)
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
         cosine = self.cosine(features[src], features[dst])
 
