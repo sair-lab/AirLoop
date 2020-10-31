@@ -69,9 +69,8 @@ class ScoreProjectionLoss(nn.Module):
 class DiscriptorMatchLoss(nn.Module):
     def __init__(self, radius=1, debug=False):
         super(DiscriptorMatchLoss, self).__init__()
-        self.similarity = nn.CosineSimilarity()
-        self.radius = radius
-        self.debug = debug
+        self.radius, self.debug = radius, debug
+        self.cosine = nn.CosineSimilarity()
 
     def forward(self, features, pts_src, pts_dst, invis_idx, height, width):
         B, N, _ = pts_src.shape
@@ -83,10 +82,10 @@ class DiscriptorMatchLoss(nn.Module):
 
         idx = (torch.cdist(pts_src, pts_dst)<=self.radius).nonzero().T
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
-        similarity = self.similarity(features[src], features[dst])
+        cosine = self.cosine(features[src], features[dst])
 
         if self.debug:
             for b, n, b1, n1 in zip(src[0], src[1], dst[0], dst[1]):
                 print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
 
-        return (1-similarity).mean()
+        return (1 - cosine).mean()
