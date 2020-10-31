@@ -5,8 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from utils import Visualization
 from utils import PairwiseProjector
+import kornia.geometry.conversions as C
 from models.featurenet import GridSample
-from kornia import PinholeCamera, DepthWarper, denormalize_pixel_coordinates
 
 
 class FeatureNetLoss(nn.Module):
@@ -67,28 +67,26 @@ class ScoreProjectionLoss(nn.Module):
 
 
 class DiscriptorMatchLoss(nn.Module):
-    def __init__(self, radius_thresh=1, debug=False):
+    def __init__(self, radius=1, debug=False):
         super(DiscriptorMatchLoss, self).__init__()
         self.similarity = nn.CosineSimilarity()
-        self.thresh = radius_thresh
+        self.radius = radius
         self.debug = debug
 
-    def forward(self, features, points, proj_pts, invis_idx, height, width):
-        B, N, _ = points.shape
+    def forward(self, features, pts_src, pts_dst, invis_idx, height, width):
+        B, N, _ = pts_src.shape
 
-        points = denormalize_pixel_coordinates(points.detach(), height, width)
-        proj_pts = denormalize_pixel_coordinates(proj_pts.detach(), height, width)
+        pts_src = C.denormalize_pixel_coordinates(pts_src.detach(), height, width)
+        pts_dst = C.denormalize_pixel_coordinates(pts_dst.detach(), height, width)
+        pts_src = pts_src.unsqueeze(1).expand_as(pts_dst).reshape(B**2, N, 2)
+        pts_dst = pts_dst.reshape_as(pts_src)
 
-        points = points.unsqueeze(1).expand_as(proj_pts).reshape(B**2, N, 2)
-        proj_pts = proj_pts.reshape_as(points)
+        idx = (torch.cdist(pts_src, pts_dst)<=self.radius).nonzero().T
+        src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
+        similarity = self.similarity(features[src], features[dst])
 
-        dist = torch.cdist(points, proj_pts)
-        match_idx = torch.nonzero((dist <= self.thresh).triu(), as_tuple=True)
-
-        points_b_n, proj_pts_b_n = [match_idx[0] % B, match_idx[1]], [match_idx[0] // B, match_idx[2]]
         if self.debug:
-            for b, n, b1, n1 in zip(points_b_n[0], points_b_n[1], proj_pts_b_n[0], proj_pts_b_n[1]):
+            for b, n, b1, n1 in zip(src[0], src[1], dst[0], dst[1]):
                 print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
-        match_loss = (1 - self.similarity(features[points_b_n], features[proj_pts_b_n])).sum()
 
-        return match_loss
+        return (1-similarity).mean()
