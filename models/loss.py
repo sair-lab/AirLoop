@@ -42,13 +42,15 @@ class DistinctionLoss(nn.Module):
         super().__init__()
         self.relu = nn.ReLU()
         self.bceloss = nn.BCELoss()
+        self.pcosine = PairwiseCosineSimilarity()
 
     def forward(self, features, scores):
         features = F.normalize(features, dim=1).detach()
         summation = features.sum(dim=1, keepdim=True).transpose(1, 2)
         similarity = (features@summation - 1)/(features.size(1) - 1)
         targets = 1 - self.relu(similarity)
-        return self.bceloss(scores, targets)
+        feat_loss = 1 - self.pcosine(features, features).mean()
+        return self.bceloss(scores, targets) + feat_loss
 
 
 class ScoreProjectionLoss(nn.Module):
@@ -80,7 +82,7 @@ class DiscriptorMatchLoss(nn.Module):
         pts_src = pts_src.unsqueeze(1).expand_as(pts_dst).reshape(B**2, N, 2)
         pts_dst = pts_dst.reshape_as(pts_src)
 
-        idx = (torch.cdist(pts_src, pts_dst)<=self.radius).nonzero().T
+        idx = (torch.cdist(pts_src, pts_dst)<=self.radius).triu().nonzero().T
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
         cosine = self.cosine(features[src], features[dst])
 
@@ -89,3 +91,15 @@ class DiscriptorMatchLoss(nn.Module):
                 print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
 
         return (1 - cosine).mean()
+
+
+class PairwiseCosineSimilarity(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cosine = nn.CosineSimilarity(dim=-2)
+
+    def forward(self, x, y):
+        x = x.permute((1, 2, 0))
+        y = y.permute((1, 2, 0)).unsqueeze(1)
+        c = self.cosine(x, y)
+        return c.permute((2, 0, 1))
