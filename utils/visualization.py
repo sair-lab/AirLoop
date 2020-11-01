@@ -32,7 +32,7 @@ class Visualization():
         h, w = img1.size(-2), img1.size(-1)
         pts1 = C.denormalize_pixel_coordinates(pts1, h, w)
         pts2 = C.denormalize_pixel_coordinates(pts2, h, w)
-        img1, img2  = torch2cv(img1).copy(), torch2cv(img2).copy()
+        img1, img2 = torch2cv(img1).copy(), torch2cv(img2).copy()
         image = matches(img1,pts1,img2,pts2,self.blue,2)
         cv2.imshow(self.winname, image)
         cv2.waitKey(1)

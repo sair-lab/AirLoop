@@ -10,9 +10,9 @@ from models.featurenet import GridSample
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, alpha=[1, 1, 1], K=None, debug=False):
+    def __init__(self, beta=[1, 1, 1], K=None, debug=False):
         super().__init__()
-        self.alpha = alpha
+        self.beta = beta
         self.sample = GridSample()
         self.distinction = DistinctionLoss()
         self.projection = ScoreProjectionLoss()
@@ -28,13 +28,14 @@ class FeatureNetLoss(nn.Module):
         match = self.match(features, points, proj_pts, invis_idx, *scores_dense.shape[2:4])
 
         if self.debug is not False:
+            print('Loss', distinction, projection, match)
             src_idx, dst_idx, pts_idx = invis_idx
             _proj_pts = proj_pts.clone()
             _proj_pts[src_idx, dst_idx, pts_idx, :] = -2
             for dbgpts in _proj_pts:
                 self.debug.show(imgs, dbgpts)
 
-        return self.alpha[0] * distinction + self.alpha[1] * projection + self.alpha[2] * match
+        return self.beta[0]*distinction + self.beta[1]*projection + self.beta[2]*match
 
 
 class DistinctionLoss(nn.Module):
@@ -82,7 +83,8 @@ class DiscriptorMatchLoss(nn.Module):
         pts_src = pts_src.unsqueeze(1).expand_as(pts_dst).reshape(B**2, N, 2)
         pts_dst = pts_dst.reshape_as(pts_src)
 
-        idx = (torch.cdist(pts_src, pts_dst)<=self.radius).triu(diagonal=1).nonzero(as_tuple=True)
+        match = torch.cdist(pts_src, pts_dst)<=self.radius
+        idx = match.triu(diagonal=0).nonzero(as_tuple=True)
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
         cosine = self.cosine(features[src], features[dst])
 

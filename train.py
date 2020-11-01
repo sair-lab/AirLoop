@@ -78,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument('--visualize', dest='visualize', action='store_true')
     parser.add_argument('--debug', dest='debug', action='store_true')
-    parser.set_defaults(visualize=True, debug=True)
+    parser.set_defaults(visualize=True, debug=False)
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     test_data = TartanAir(root=args.data_root, train=False, img_transform=image_transform)
     test_loader = Data.DataLoader(test_data, args.batch_size, False)
 
-    criterion = FeatureNetLoss()
+    criterion = FeatureNetLoss(debug=args.debug)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
