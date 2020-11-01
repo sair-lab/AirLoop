@@ -5,7 +5,6 @@ import torch
 import numpy as np
 import torchvision
 import kornia.geometry.conversions as C
-from mpl_toolkits.mplot3d import Axes3D
 
 
 class Visualization():
