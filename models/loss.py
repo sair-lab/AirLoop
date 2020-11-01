@@ -46,7 +46,7 @@ class DistinctionLoss(nn.Module):
         self.pcosine = PairwiseCosineSimilarity()
 
     def forward(self, features, scores):
-        features = F.normalize(features, dim=1).detach()
+        features = F.normalize(features, dim=2).detach()
         summation = features.sum(dim=1, keepdim=True).transpose(1, 2)
         similarity = (features@summation - 1)/(features.size(1) - 1)
         targets = 1 - self.relu(similarity)
