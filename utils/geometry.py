@@ -56,9 +56,9 @@ class PairwiseProjector(nn.Module):
 
             invis_idx = torch.stack([pair_idx // B, pair_idx % B, point_idx])
 
-            return proj_p.reshape(B, B, N, 2).transpose(0, 1), invis_idx
+            return proj_p.reshape(B, B, N, 2), invis_idx
         else:
-            return proj_p.reshape(B, B, N, 2).transpose(0, 1)
+            return proj_p.reshape(B, B, N, 2)
 
     @staticmethod
     def _batch_repeat(x):

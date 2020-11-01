@@ -20,12 +20,13 @@ class FeatureNetLoss(nn.Module):
         self.match = DiscriptorMatchLoss(debug=debug)
         self.debug = Visualization('loss') if debug else debug
 
-    def forward(self, features, points, scores_dense, depths_dense, poses, K, imgs):
-        scores = self.sample((scores_dense, points))
+    def forward(self, features, points, pointness, depths_dense, poses, K, imgs):
+        H, W = pointness.size(2), pointness.size(3)
+        scores = self.sample((pointness, points))
         distinction = self.distinction(features, scores)
         proj_pts, invis_idx = self.projector(points, depths_dense, poses, K)
-        projection = self.projection(scores_dense, scores, proj_pts, invis_idx)
-        match = self.match(features, points, proj_pts, invis_idx, *scores_dense.shape[2:4])
+        projection = self.projection(pointness, scores, proj_pts, invis_idx)
+        match = self.match(features, points, proj_pts, invis_idx, H, W)
 
         if self.debug is not False:
             print('Loss', distinction, projection, match)
@@ -34,6 +35,7 @@ class FeatureNetLoss(nn.Module):
             _proj_pts[src_idx, dst_idx, pts_idx, :] = -2
             for dbgpts in _proj_pts:
                 self.debug.show(imgs, dbgpts)
+            self.debug.showmatch(imgs[0], points[0], imgs[1], proj_pts[0,1])
 
         return self.beta[0]*distinction + self.beta[1]*projection + self.beta[2]*match
 
@@ -60,9 +62,9 @@ class ScoreProjectionLoss(nn.Module):
         self.sample = GridSample()
         self.mseloss = nn.MSELoss(reduction='none')
 
-    def forward(self, scores_dense, scores_src, proj_pts, invis_idx):
-        scores_dst = self.sample((scores_dense, proj_pts))
-        scores_src = scores_src.unsqueeze(1).expand_as(scores_dst)
+    def forward(self, pointness, scores_src, proj_pts, invis_idx):
+        scores_dst = self.sample((pointness, proj_pts))
+        scores_src = scores_src.unsqueeze(0).expand_as(scores_dst)
         proj_loss = self.mseloss(scores_dst, scores_src)
         src_idx, dst_idx, pts_idx = invis_idx
         proj_loss[src_idx, dst_idx, pts_idx] = 0
@@ -80,7 +82,7 @@ class DiscriptorMatchLoss(nn.Module):
 
         pts_src = C.denormalize_pixel_coordinates(pts_src.detach(), height, width)
         pts_dst = C.denormalize_pixel_coordinates(pts_dst.detach(), height, width)
-        pts_src = pts_src.unsqueeze(1).expand_as(pts_dst).reshape(B**2, N, 2)
+        pts_src = pts_src.unsqueeze(0).expand_as(pts_dst).reshape(B**2, N, 2)
         pts_dst = pts_dst.reshape_as(pts_src)
 
         match = torch.cdist(pts_src, pts_dst)<=self.radius
