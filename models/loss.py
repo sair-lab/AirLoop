@@ -20,13 +20,13 @@ class FeatureNetLoss(nn.Module):
         self.match = DiscriptorMatchLoss(debug=debug)
         self.debug = Visualization('loss') if debug else debug
 
-    def forward(self, features, points, pointness, depths_dense, poses, K, imgs):
+    def forward(self, descriptors, points, pointness, depths_dense, poses, K, imgs):
         H, W = pointness.size(2), pointness.size(3)
         scores = self.sample((pointness, points))
-        distinction = self.distinction(features, scores)
+        distinction = self.distinction(descriptors, scores)
         proj_pts, invis_idx = self.projector(points, depths_dense, poses, K)
         projection = self.projection(pointness, scores, proj_pts, invis_idx)
-        match = self.match(features, points, proj_pts, invis_idx, H, W)
+        match = self.match(descriptors, points, proj_pts, invis_idx, H, W)
 
         if self.debug is not False:
             print('Loss', distinction, projection, match)
@@ -47,12 +47,12 @@ class DistinctionLoss(nn.Module):
         self.bceloss = nn.BCELoss()
         self.pcosine = PairwiseCosineSimilarity()
 
-    def forward(self, features, scores):
-        features = F.normalize(features, dim=2).detach()
-        summation = features.sum(dim=1, keepdim=True).transpose(1, 2)
-        similarity = (features@summation - 1)/(features.size(1) - 1)
+    def forward(self, descriptors, scores):
+        descriptors = F.normalize(descriptors, dim=2).detach()
+        summation = descriptors.sum(dim=1, keepdim=True).transpose(1, 2)
+        similarity = (descriptors@summation - 1)/(descriptors.size(1) - 1)
         targets = 1 - self.relu(similarity)
-        feat_loss = 1 - self.pcosine(features, features).mean()
+        feat_loss = 1 - self.pcosine(descriptors, descriptors).mean()
         return self.bceloss(scores, targets) + feat_loss
 
 
@@ -77,7 +77,7 @@ class DiscriptorMatchLoss(nn.Module):
         self.radius, self.debug = radius, debug
         self.cosine = nn.CosineSimilarity()
 
-    def forward(self, features, pts_src, pts_dst, invis_idx, height, width):
+    def forward(self, descriptors, pts_src, pts_dst, invis_idx, height, width):
         B, N, _ = pts_src.shape
 
         pts_src = C.denormalize_pixel_coordinates(pts_src.detach(), height, width)
@@ -88,7 +88,7 @@ class DiscriptorMatchLoss(nn.Module):
         match = torch.cdist(pts_src, pts_dst)<=self.radius
         idx = match.triu(diagonal=1).nonzero(as_tuple=True)
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
-        cosine = self.cosine(features[src], features[dst])
+        cosine = self.cosine(descriptors[src], descriptors[dst])
 
         if self.debug:
             for b, n, b1, n1 in zip(src[0], src[1], dst[0], dst[1]):

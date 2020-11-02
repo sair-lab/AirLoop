@@ -73,8 +73,9 @@ if __name__ == "__main__":
     parser.add_argument("--momentum", type=float, default=0.9, help="momentum of optim")
     parser.add_argument("--w-decay", type=float, default=0, help="weight decay of optim")
     parser.add_argument("--epoch", type=int, default=15, help="number of epoches")
-    parser.add_argument("--batch-size", type=int, default=5, help="minibatch size")
+    parser.add_argument("--batch-size", type=int, default=4, help="minibatch size")
     parser.add_argument("--patience", type=int, default=5, help="training patience")
+    parser.add_argument("--num-workers", type=int, default=4, help="workers of dataloader")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument("--visualize", dest='visualize', action='store_true')
     parser.add_argument("--debug", dest='debug', action='store_true')
@@ -83,13 +84,14 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    image_transform = T.Compose([T.Resize(args.resize), T.ToTensor()])
+    image_transform = T.Compose([T.Resize(args.resize), lambda x: np.array(x), T.ToTensor()])
     depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
 
     train_data = TartanAir(root=args.data_root, train=True, img_transform=image_transform, depth_transform=depth_transform)
-    train_loader = Data.DataLoader(train_data, args.batch_size, False)
     test_data = TartanAir(root=args.data_root, train=False, img_transform=image_transform)
-    test_loader = Data.DataLoader(test_data, args.batch_size, False)
+
+    train_loader = Data.DataLoader(train_data, args.batch_size, False, pin_memory=True, num_workers=args.num_workers)
+    test_loader = Data.DataLoader(test_data, args.batch_size, False, pin_memory=True, num_workers=args.num_workers)
 
     criterion = FeatureNetLoss(debug=args.debug)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
