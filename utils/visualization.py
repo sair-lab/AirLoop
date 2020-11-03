@@ -36,6 +36,17 @@ class Visualization():
         cv2.imshow(self.winname, image)
         cv2.waitKey(1)
 
+    def reprojectshow(self, imgs, pts_src, pts_dst, src, dst):
+        pts_src, pts_dst = pts_src[src], pts_src[dst]
+        for i in range(src[0].size(0)):
+            pts1 = pts_src[i].unsqueeze(0)
+            pts2 = pts_dst[i].unsqueeze(0)
+            img1 = torch2cv(imgs[src[0][i]]).copy()
+            img2 = torch2cv(imgs[dst[0][i]]).copy()
+            image = matches(img1,pts1,img2,pts2,self.blue,2)
+            cv2.imshow(self.winname+'-dst', image)
+            cv2.waitKey(1)
+
 
 def matches(img1, pts1, img2, pts2, color, flags):
     ''' Assume pts1 are matched with pts2, respectively.
