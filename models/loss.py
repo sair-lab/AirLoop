@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
 import torch
-import kornia as K
+import kornia as kn
 import torch.nn as nn
-import kornia.feature as KF
+import kornia.feature as kf
 import torch.nn.functional as F
 from utils import Visualization
 from utils import PairwiseProjector
@@ -47,8 +47,8 @@ class DistinctionLoss(nn.Module):
         super().__init__()
         self.radius = radius
         self.relu = nn.ReLU()
-        self.bceloss = nn.BCELoss()
-        self.corner_det = KF.CornerGFTT()
+        self.bceloss = nn.BCEWithLogitsLoss()
+        self.corner_det = kf.CornerGFTT()
         self.pcosine = PairwiseCosineSimilarity()
 
     def forward(self, descriptors, scores, scores_dense, imgs):
@@ -64,7 +64,7 @@ class DistinctionLoss(nn.Module):
 
     def get_corners(self, imgs, num=200):
         B, _, H, W = imgs.shape
-        corners = KF.nms2d(self.corner_det(K.rgb_to_grayscale(imgs)), (5, 5))
+        corners = kf.nms2d(self.corner_det(kn.rgb_to_grayscale(imgs)), (5, 5))
 
         # only one in patch
         corners = F.unfold(corners, kernel_size=self.radius, stride=self.radius)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import math
 import torch
 import torch.nn as nn
 from kornia.feature import nms
@@ -18,17 +19,27 @@ class IndexSelect(nn.Module):
         return x.index_select(self.dim, self.index)
 
 
-class ZeroBorder(nn.Module):
+class ConstantBorder(nn.Module):
     '''
-    Set Boarders to Zero
+    Set Boarders to Constant
     '''
-    def __init__(self, border=4):
+    def __init__(self, border=4, value=-math.inf):
         super().__init__()
-        self.pad1 = nn.ZeroPad2d(-border)
-        self.pad2 = nn.ZeroPad2d(border)
+        self.pad1 = nn.ConstantPad2d(-border, value=value)
+        self.pad2 = nn.ConstantPad2d(border, value=value)
 
     def forward(self, x):
         return self.pad2(self.pad1(x))
+
+
+class DualAddNet(nn.Module):
+    def __init__(self, net1, net2):
+        super().__init__()
+        self.net1, self.net2 = net1, net2
+
+    def forward(self, inputs):
+        x, y = inputs
+        return self.net1(x) + self.net2(y)
 
 
 class GridSample(nn.Module):
@@ -70,13 +81,15 @@ class FeatureNet(models.VGG):
         self.features = nn.Sequential(*list(self.features.children())[:19])
         del self.classifier
 
-        self.scores = nn.Sequential(
+        scores = nn.Sequential(
                 nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1), nn.ReLU(),
                 nn.Conv2d(256, 65, kernel_size=1, stride=1, padding=0), nn.Softmax(dim=1),
-                IndexSelect(dim=1, index=torch.LongTensor(list(range(64)))),
-                nn.PixelShuffle(upscale_factor=8),
-                # nms.NonMaximaSuppression2d(kernel_size=(9,9)),
-                ZeroBorder(border=4))
+                IndexSelect(dim=1, index=torch.arange(64)),
+                nn.PixelShuffle(upscale_factor=8))
+        residual = nn.Sequential(
+                nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1), nn.ReLU(),
+                nn.Conv2d(64, 1, kernel_size=1, stride=1, padding=0))
+        self.scores = DualAddNet(scores, residual)
 
         self.descriptors = nn.Sequential(
                 nn.Conv2d(512, self.feat_dim, kernel_size=3, stride=1, padding=1), nn.ReLU(),
@@ -96,7 +109,7 @@ class FeatureNet(models.VGG):
 
         features = self.features(inputs)
 
-        pointness = self.scores(features)
+        pointness = self.scores((features, inputs))
 
         scores, points = pointness.view(B,-1,1).topk(self.feat_num, dim=1)
 
