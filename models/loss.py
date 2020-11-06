@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import torch
+import kornia as K
 import torch.nn as nn
+import kornia.feature as KF
 import torch.nn.functional as F
 from utils import Visualization
 from utils import PairwiseProjector
@@ -23,7 +25,7 @@ class FeatureNetLoss(nn.Module):
     def forward(self, descriptors, points, pointness, depths_dense, poses, K, imgs):
         H, W = pointness.size(2), pointness.size(3)
         scores = self.sample((pointness, points))
-        distinction = self.distinction(descriptors, scores)
+        distinction = self.distinction(descriptors, scores, pointness, imgs)
         proj_pts, invis_idx = self.projector(points, depths_dense, poses, K)
         projection = self.projection(pointness, scores, proj_pts, invis_idx)
         match = self.match(descriptors, points, proj_pts, invis_idx, H, W)
@@ -41,19 +43,41 @@ class FeatureNetLoss(nn.Module):
 
 
 class DistinctionLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, radius=8):
         super().__init__()
+        self.radius = radius
         self.relu = nn.ReLU()
         self.bceloss = nn.BCELoss()
+        self.corner_det = KF.CornerGFTT()
         self.pcosine = PairwiseCosineSimilarity()
 
-    def forward(self, descriptors, scores):
+    def forward(self, descriptors, scores, scores_dense, imgs):
+        corners = self.get_corners(imgs)
+
         feat_loss = self.relu(self.pcosine(descriptors, descriptors)).mean()
-        descriptors = F.normalize(descriptors, dim=2).detach()
-        summation = descriptors.sum(dim=1, keepdim=True).transpose(1, 2)
-        similarity = (descriptors@summation - 1)/(descriptors.size(1) - 1)
-        targets = 1 - self.relu(similarity)
-        return self.bceloss(scores, targets) + feat_loss
+        # descriptors = F.normalize(descriptors, dim=2).detach()
+        # summation = descriptors.sum(dim=1, keepdim=True).transpose(1, 2)
+        # similarity = (descriptors@summation - 1)/(descriptors.size(1) - 1)
+        # targets = 1 - self.relu(similarity)
+
+        return self.bceloss(scores_dense, corners) + feat_loss
+
+    def get_corners(self, imgs, num=200):
+        B, _, H, W = imgs.shape
+        corners = KF.nms2d(self.corner_det(K.rgb_to_grayscale(imgs)), (5, 5))
+
+        # only one in patch
+        corners = F.unfold(corners, kernel_size=self.radius, stride=self.radius)
+        mask = (corners > 0) & (corners == corners.max(dim=1, keepdim=True).values)
+        corners = corners * mask.to(corners)
+        corners = F.fold(corners, (H, W), kernel_size=self.radius, stride=self.radius)
+
+        # keep top
+        values, idx = corners.view(B, -1).topk(num, dim=1)
+        b, idx = torch.arange(0, B).repeat_interleave(num), idx.flatten()
+        corners = torch.zeros_like(corners)
+        corners[b, 0, idx // W, idx % W] = values.flatten()
+        return (corners > 0).to(corners)
 
 
 class ScoreProjectionLoss(nn.Module):

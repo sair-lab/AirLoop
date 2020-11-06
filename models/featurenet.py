@@ -75,7 +75,7 @@ class FeatureNet(models.VGG):
                 nn.Conv2d(256, 65, kernel_size=1, stride=1, padding=0), nn.Softmax(dim=1),
                 IndexSelect(dim=1, index=torch.LongTensor(list(range(64)))),
                 nn.PixelShuffle(upscale_factor=8),
-                nms.NonMaximaSuppression2d(kernel_size=(9,9)),
+                # nms.NonMaximaSuppression2d(kernel_size=(9,9)),
                 ZeroBorder(border=4))
 
         self.descriptors = nn.Sequential(
