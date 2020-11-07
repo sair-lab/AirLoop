@@ -60,13 +60,11 @@ class DistinctionLoss(nn.Module):
 
 
 class ScoreLoss(nn.Module):
-    def __init__(self, radius=8, num_corners=200, debug=False):
+    def __init__(self, radius=8, num_corners=500, debug=False):
         super(ScoreLoss, self).__init__()
         self.radius = radius
-        self.sample = GridSample(),
-        self.bceloss = nn.BCEWithLogitsLoss()
+        self.bceloss = nn.BCELoss()
         self.corner_det = kf.CornerGFTT()
-        self.mseloss = nn.MSELoss(reduction='none')
         self.num_corners = num_corners
         self.debug = Visualization('corners') if debug else debug
 
