@@ -49,18 +49,18 @@ class DistinctionLoss(nn.Module):
         self.relu = nn.ReLU()
         self.bceloss = nn.BCEWithLogitsLoss()
         self.corner_det = kf.CornerGFTT()
-        self.pcosine = PairwiseCosineSimilarity()
+        self.cosine = nn.CosineSimilarity(dim=-2)
 
     def forward(self, descriptors, scores, scores_dense, imgs):
         corners = self.get_corners(imgs)
 
-        feat_loss = self.relu(self.pcosine(descriptors, descriptors)).mean()
-        # descriptors = F.normalize(descriptors, dim=2).detach()
-        # summation = descriptors.sum(dim=1, keepdim=True).transpose(1, 2)
-        # similarity = (descriptors@summation - 1)/(descriptors.size(1) - 1)
-        # targets = 1 - self.relu(similarity)
+        # pairwise cosine
+        x = descriptors.permute((1, 2, 0))
+        y = descriptors.permute((1, 2, 0)).unsqueeze(1)
+        c = self.cosine(x, y)
+        pcos = c.permute((2, 0, 1))
 
-        return self.bceloss(scores_dense, corners) + feat_loss
+        return self.bceloss(scores_dense, corners) + self.relu(pcos).mean()
 
     def get_corners(self, imgs, num=200):
         B, _, H, W = imgs.shape
@@ -119,15 +119,3 @@ class DiscriptorMatchLoss(nn.Module):
                 print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
 
         return (1 - cosine).mean()
-
-
-class PairwiseCosineSimilarity(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.cosine = nn.CosineSimilarity(dim=-2)
-
-    def forward(self, x, y):
-        x = x.permute((1, 2, 0))
-        y = y.permute((1, 2, 0)).unsqueeze(1)
-        c = self.cosine(x, y)
-        return c.permute((2, 0, 1))
