@@ -17,21 +17,23 @@ class FeatureNetLoss(nn.Module):
         self.beta = beta
         self.sample = GridSample()
         self.distinction = DistinctionLoss()
-        self.projection = ScoreProjectionLoss()
         self.projector = PairwiseProjector(K)
+        self.score_loss = ScoreLoss(debug=debug)
         self.match = DiscriptorMatchLoss(debug=debug)
         self.debug = Visualization('loss') if debug else debug
 
     def forward(self, descriptors, points, pointness, depths_dense, poses, K, imgs):
+        def batch_project(pts):
+            return self.projector(pts, depths_dense, poses, K)
+
         H, W = pointness.size(2), pointness.size(3)
-        scores = self.sample((pointness, points))
-        distinction = self.distinction(descriptors, scores, pointness, imgs)
-        proj_pts, invis_idx = self.projector(points, depths_dense, poses, K)
-        projection = self.projection(pointness, scores, proj_pts, invis_idx)
+        distinction = self.distinction(descriptors)
+        cornerness = self.score_loss(pointness, imgs, batch_project)
+        proj_pts, invis_idx = batch_project(points)
         match = self.match(descriptors, points, proj_pts, invis_idx, H, W)
 
         if self.debug is not False:
-            print('Loss', distinction, projection, match)
+            print('Loss: ', distinction, cornerness, match)
             src_idx, dst_idx, pts_idx = invis_idx
             _proj_pts = proj_pts.clone()
             _proj_pts[src_idx, dst_idx, pts_idx, :] = -2
@@ -39,31 +41,52 @@ class FeatureNetLoss(nn.Module):
                 self.debug.show(imgs, dbgpts)
             self.debug.showmatch(imgs[0], points[0], imgs[1], proj_pts[0,1])
 
-        return self.beta[0]*distinction + self.beta[1]*projection + self.beta[2]*match
+        return self.beta[0]*distinction + self.beta[1]*cornerness + self.beta[2]*match
 
 
 class DistinctionLoss(nn.Module):
-    def __init__(self, radius=8):
+    def __init__(self):
         super().__init__()
-        self.radius = radius
         self.relu = nn.ReLU()
-        self.bceloss = nn.BCEWithLogitsLoss()
-        self.corner_det = kf.CornerGFTT()
         self.cosine = nn.CosineSimilarity(dim=-2)
 
-    def forward(self, descriptors, scores, scores_dense, imgs):
-        corners = self.get_corners(imgs)
-
+    def forward(self, descriptors):
         # pairwise cosine
         x = descriptors.permute((1, 2, 0))
         y = descriptors.permute((1, 2, 0)).unsqueeze(1)
         c = self.cosine(x, y)
         pcos = c.permute((2, 0, 1))
+        return self.relu(pcos).mean()
 
-        return self.bceloss(scores_dense, corners) + self.relu(pcos).mean()
 
-    def get_corners(self, imgs, num=200):
-        B, _, H, W = imgs.shape
+class ScoreLoss(nn.Module):
+    def __init__(self, radius=8, num_corners=200, debug=False):
+        super(ScoreLoss, self).__init__()
+        self.radius = radius
+        self.sample = GridSample(),
+        self.bceloss = nn.BCEWithLogitsLoss()
+        self.corner_det = kf.CornerGFTT()
+        self.mseloss = nn.MSELoss(reduction='none')
+        self.num_corners = num_corners
+        self.debug = Visualization('corners') if debug else debug
+
+    def forward(self, scores_dense, imgs, projector):
+        corners = self.get_corners(imgs)
+
+        if self.debug:
+            _B = corners.shape[0]
+            _coords = corners.squeeze().nonzero(as_tuple=False)
+            _pts_list = [_coords[_coords[:, 0] == i][:, [2, 1]] for i in range(_B)]
+            _pts = torch.ones(_B, max([p.shape[0] for p in _pts_list]), 2) * -2
+            for i, p in enumerate(_pts_list):
+                _pts[i, :len(p)] = p
+            _pts = C.normalize_pixel_coordinates(_pts, imgs.shape[2], imgs.shape[3])
+            self.debug.show(imgs, _pts)
+
+        return self.bceloss(scores_dense, corners)
+
+    def get_corners(self, imgs, projector=None):
+        (B, _, H, W), N = imgs.shape, self.num_corners
         corners = kf.nms2d(self.corner_det(kn.rgb_to_grayscale(imgs)), (5, 5))
 
         # only one in patch
@@ -73,11 +96,32 @@ class DistinctionLoss(nn.Module):
         corners = F.fold(corners, (H, W), kernel_size=self.radius, stride=self.radius)
 
         # keep top
-        values, idx = corners.view(B, -1).topk(num, dim=1)
-        b, idx = torch.arange(0, B).repeat_interleave(num), idx.flatten()
-        corners = torch.zeros_like(corners)
-        corners[b, 0, idx // W, idx % W] = values.flatten()
-        return (corners > 0).to(corners)
+        values, idx = corners.view(B, -1).topk(N, dim=1)
+        idx = idx.flatten()
+        coords = torch.stack([idx % W, idx // W]).T.reshape(B, N, 2)  # (x, y), same below
+
+        if not projector:
+            # keep as-is
+            b = torch.arange(0, B).repeat_interleave(N)
+            h, w = idx // W, idx % W
+            values = values.flatten()
+        else:
+            # combine corners from all images
+            coords = kn.normalize_pixel_coordinates(coords, H, W)
+            coords, invis_idx = projector(coords)
+            coords[tuple(invis_idx)] = -2
+            coords_combined = coords.transpose(0, 1).reshape(B, B * N, 2)
+            coords_combined = kn.denormalize_pixel_coordinates(coords_combined, H, W).round().to(torch.long)
+            b = torch.arange(B).repeat_interleave(B * N)
+            w, h = coords_combined.reshape(-1, 2).T
+            mask = w >= 0
+            b, h, w, values = b[mask], h[mask], w[mask], values.flatten().repeat(B)[mask]
+
+        target = torch.zeros_like(corners)
+        target[b, 0, h, w] = values
+        target = kf.nms2d(target, (5, 5))
+
+        return (target > 0).to(target)
 
 
 class ScoreProjectionLoss(nn.Module):
