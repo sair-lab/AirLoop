@@ -27,7 +27,7 @@ class PairwiseProjector(nn.Module):
         poses_dst = poses.repeat(B, 1, 1)
 
         # (B, N)
-        depths = F.grid_sample(depths_dense, points[:, None], align_corners=False).squeeze()
+        depths = F.grid_sample(depths_dense, points[:, None], align_corners=False).squeeze(1).squeeze(1)
 
         # (B, N, 2)
         points_px = G.denormalize_pixel_coordinates(points, H, W)
@@ -49,7 +49,7 @@ class PairwiseProjector(nn.Module):
 
             H, W = depths_dense.shape[2:4]
             depths_dense_dup = depths_dense.expand(B, B, H, W).transpose(0, 1).reshape(B**2, 1, H, W)
-            depths_dst = F.grid_sample(depths_dense_dup, proj_p[:, None], align_corners=False).squeeze()
+            depths_dst = F.grid_sample(depths_dense_dup, proj_p[:, None], align_corners=False).squeeze(1).squeeze(1)
             is_occluded = proj_depth > depths_dst + self.eps
 
             pair_idx, point_idx = torch.nonzero(is_out_of_bound | is_occluded, as_tuple=True)
@@ -114,7 +114,7 @@ def project_points(p, depth_src, cam_src, cam_dst):
     # (B, 1, N, 3)
     pix_coords = torch.cat([p, torch.ones(b, n, 1).to(p)], dim=2)[:, None]
     projected, proj_depth = warp_grid(warper, pix_coords, depth_src.view(b, 1, 1, n))
-    return projected.squeeze(), proj_depth.squeeze()
+    return projected.squeeze(1), proj_depth.squeeze(1)
 
 
 def warp_grid(warper, pixel_coords, depth_src):
