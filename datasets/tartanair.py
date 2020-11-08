@@ -26,8 +26,8 @@ class TartanAir(Dataset):
             assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
             self.sizes.append(len(self.image[seq]))
         fx, fy, cx, cy = 320, 320, 320, 240
-        K = torch.tensor([[fx, 0, cx], [0, fy, cy]]) * scale
-        self.K = torch.cat([K, torch.tensor([0, 0, 1]).view(1,3)], dim=0)
+        K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy]]) * scale
+        self.K = torch.cat([K, torch.FloatTensor([0, 0, 1]).view(1,3)], dim=0)
 
     def __len__(self):
         return sum(self.sizes)
