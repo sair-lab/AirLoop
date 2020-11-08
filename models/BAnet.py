@@ -35,24 +35,25 @@ class BAGDnet(nn.Module):
         indexMP = torch.where(torch.tensor(measurements[:,1].reshape(-1,1),dtype=torch.int)==self.idxMP)[1]
 
         # In test set, tKF is the Twc inverse. We may need to store something else in Memory
-        reprojectPoints = torch.matmul(self.tKF[indexKF],self.tMPhomo[indexMP])
+        self.reprojectPoints = torch.matmul(self.tKF[indexKF],self.tMPhomo[indexMP])
 
         # This operation can also be a matmul with matrxi K TODO
-        self.ptx = (reprojectPoints[:,0]/reprojectPoints[:,2])*self.fx + self.cx
-        self.pty = (reprojectPoints[:,1]/reprojectPoints[:,2])*self.fy + self.cy
+        self.ptx = (self.reprojectPoints[:,0]/self.reprojectPoints[:,2])*self.fx + self.cx
+        self.pty = (self.reprojectPoints[:,1]/self.reprojectPoints[:,2])*self.fy + self.cy
 
         obs2d = torch.cat((self.ptx,self.pty),1)
         return obs2d
 
 if __name__ == "__main__":
     '''Test codes'''
-    import time
+    import time, math
     import argparse
     import torch.optim as optim
 
     parser = argparse.ArgumentParser(description='Test BAGD')
     parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
+    parser.add_argument('--lr', type=float, default=0.000001, help='Random seed.')
     args = parser.parse_args()
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -63,15 +64,13 @@ if __name__ == "__main__":
 
     net = BAGDnet(MPs, KFs)
 
-    SmoothLoss = torch.nn.SmoothL1Loss()
-    optimizer = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
+    SmoothLoss = nn.SmoothL1Loss(beta = math.sqrt(5.99))
+    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9)
 
     z = torch.tensor(Matches[:,2:4])
-    output = net.forward(Matches)
-    loss = SmoothLoss(output,z)
-    print(loss.data.item())
-    loss.backward()
-    optimizer.step()
-    output = net.forward(Matches)
-    loss = SmoothLoss(output,z)
-    print(loss.data.item())
+    for i in range(20):
+        output = net.forward(Matches)
+        loss = SmoothLoss(output,z)
+        loss.backward()
+        optimizer.step()
+        print(loss.data.item())
