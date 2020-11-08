@@ -67,21 +67,6 @@ class PairwiseProjector(nn.Module):
         return x[:, None].expand(B, B, *shape).reshape(B**2, *shape)
 
 
-def pose2mat(pose):
-    """Converts pose vectors to matrices.
-
-    Args:
-      pose: [tx, ty, tz, qx, qy, qz, qw] (N, 7).
-
-    Returns:
-      [R t] (N, 3, 4).
-    """
-    t = pose[:, 0:3, None]
-    rot = R.from_quat(pose[:, 3:7]).as_matrix().astype(np.float32).transpose(0, 2, 1)
-    t = -rot @ t
-    return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)
-
-
 def make_camera(height, width, K, pose, batch_size=1):
     """Creates a PinholeCamera with specified info"""
     intrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)

@@ -2,5 +2,4 @@
 
 from .visualization import Visualization
 
-from .geometry import pose2mat
 from .geometry import PairwiseProjector

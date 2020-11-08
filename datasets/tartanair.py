@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 
+import os
 import glob
 import torch
 import numpy as np
 from os import path
 from PIL import Image
+from torch.utils.data import Sampler
+from torch.utils.data import Dataset, DataLoader
 from torchvision.datasets import VisionDataset
-
-from utils import pose2mat
+from scipy.spatial.transform import Rotation as R
 
 
 class DatasetBase(VisionDataset):
@@ -94,3 +96,84 @@ class TartanAir(DatasetBase):
                                 [0, 0, 1],
                                 [1, 0, 0]]).to(dtype=torch.float32)
         return ned2den @ pose2mat(poses7)
+
+
+class tartanair(Dataset):
+    def __init__(self, root='/data/datasets/tartanair', scale=0.5, transform=None, depth_transform=None):
+        super().__init__()
+        self.transform, self.depth_transform = transform, depth_transform
+        self.sequences = glob.glob(os.path.join(root,'*','Easy','*'))
+        self.image, self.depth, self.poses, self.size = {}, {}, {}, torch.IntTensor()
+        ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+        for seq in self.sequences:
+            quaternion = np.loadtxt(path.join(seq, 'pose_left.txt'), dtype=np.float32)
+            self.poses[seq] = ned2den @ pose2mat(quaternion)
+            self.image[seq] = sorted(glob.glob(path.join(seq,'image_left','*.png')))
+            self.depth[seq] = sorted(glob.glob(path.join(seq,'depth_left','*.npy')))
+            assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
+            self.size = torch.cat([self.size, torch.IntTensor([len(self.image[seq])])])
+        self.sizecum = self.size.cumsum(dim=0)
+
+    def __len__(self):
+        return self.size.sum()
+
+    def __getitem__(self, frame):
+        i = 0
+        while self.size[i] - frame <= 0:
+            frame = frame - self.size[i]
+            i = i + 1
+        # return i, frame
+        seq = self.sequences[i]
+        image = Image.open(self.image[seq][frame])
+        depth = torch.from_numpy(np.load(self.depth[seq][frame]))
+        pose = self.poses[seq][frame]
+        image = image if self.transform is None else self.transform(image)
+        return image, depth, pose
+
+
+
+class AirSampler(Sampler):
+
+    def __init__(self, data, batch_size, shuffle=True):
+        self.data, self.batch_size = data, batch_size
+        self.shuffle = shuffle
+        self.len = len(data) - batch_size
+        self.size = data.size
+
+    def __iter__(self):
+        L = torch.randperm(self.len) if self.shuffle else torch.arange(self.len)
+        self.minibatches = [range(L[n], L[n]+self.batch_size) for n in range(len(L))]
+        return iter(self.minibatches)
+
+    def __len__(self):
+        return len(self.minibatches)
+
+    def __repr__(self):
+        return 'AirSampler(batch_size={})'.format(self.batch_size)
+
+
+
+
+def pose2mat(pose):
+    """Converts pose vectors to matrices.
+
+    Args:
+      pose: [tx, ty, tz, qx, qy, qz, qw] (N, 7).
+
+    Returns:
+      [R t] (N, 3, 4).
+    """
+    t = pose[:, 0:3, None]
+    rot = R.from_quat(pose[:, 3:7]).as_matrix().astype(np.float32).transpose(0, 2, 1)
+    t = -rot @ t
+    return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)
+
+
+if __name__ == "__main__":
+    from torchvision import transforms as T
+    data = tartanair(transform=T.ToTensor(), depth_transform=T.ToTensor())
+    sampler = AirSampler(data, batch_size=5, shuffle=False)
+    loader = DataLoader(dataset=data,  batch_sampler=sampler, num_workers=0)
+
+    for i, data in enumerate(loader):
+        print(data)
