@@ -10,11 +10,13 @@ import argparse
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
-import torch.utils.data as Data
+# import torch.utils.data as Data
 from torchvision import transforms as T
+from torch.utils.data import DataLoader
 
 from utils import Visualization
 from datasets import TartanAir
+from datasets import AirSampler
 from models import FeatureNet
 from models import FeatureNetLoss
 from models import EarlyStopScheduler
@@ -61,12 +63,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Feature Graph Networks')
     parser.add_argument("--device", type=str, default='cuda:0', help="cuda or cpu")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
-    parser.add_argument("--data-root", type=str, default='data/office2/P003', help="data location")
+    parser.add_argument("--data-root", type=str, default='/data/datasets/tartanair', help="data location")
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
     parser.add_argument("--feat-num", type=int, default=200, help="feature number")
-    parser.add_argument('--resize', nargs='+', type=int, default=[240,320], help='image resize')
+    parser.add_argument('--scale', type=float, default=0.5, help='image resize')
     parser.add_argument("--lr", type=float, default=1e-5, help="learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="learning rate")
     parser.add_argument("--factor", type=float, default=0.1, help="factor of lr")
@@ -79,19 +81,23 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument("--visualize", dest='visualize', action='store_true')
     parser.add_argument("--debug", dest='debug', action='store_true')
-    parser.set_defaults(visualize=False, debug=False)
+    parser.set_defaults(visualize=True, debug=False)
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    image_transform = T.Compose([T.Resize(args.resize), lambda x: np.array(x), T.ToTensor()])
+    resize = [round(480*args.scale), round(640*args.scale)]
+    image_transform = T.Compose([T.Resize(resize), lambda x: np.array(x), T.ToTensor()])
     depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
 
-    train_data = TartanAir(root=args.data_root, train=True, img_transform=image_transform, depth_transform=depth_transform)
-    test_data = TartanAir(root=args.data_root, train=False, img_transform=image_transform)
+    train_data = TartanAir(args.data_root, args.scale, image_transform, depth_transform)
+    test_data = TartanAir(args.data_root, args.scale, image_transform)
 
-    train_loader = Data.DataLoader(train_data, args.batch_size, False, pin_memory=True, num_workers=args.num_workers)
-    test_loader = Data.DataLoader(test_data, args.batch_size, False, pin_memory=True, num_workers=args.num_workers)
+    train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)
+    test_sampler = AirSampler(test_data, args.batch_size, shuffle=False)
+
+    train_loader = DataLoader(train_data, batch_sampler=train_sampler, pin_memory=True, num_workers=args.num_workers)
+    test_loader = DataLoader(test_data, batch_sampler=test_sampler, pin_memory=True, num_workers=args.num_workers)
 
     criterion = FeatureNetLoss(debug=args.debug)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
