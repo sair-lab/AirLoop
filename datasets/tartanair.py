@@ -48,20 +48,17 @@ class AirSampler(Sampler):
         self.data_sizes = data.sizes
         self.bs = batch_size
         self.shuffle = shuffle
+        self.__iter__()
 
     def __iter__(self):
-        self.update()
-        return iter(self.batches)
-
-    def update(self):
         self.batches = []
         for i, size in enumerate(self.data_sizes):
             num = size - self.bs + 1
             L = torch.randperm(num) if self.shuffle else torch.arange(num)
             self.batches += [list(zip([i]*self.bs, list(range(L[n], L[n]+self.bs)))) for n in range(num)]
+        return iter(self.batches)
 
     def __len__(self):
-        self.update()
         return len(self.batches)
 
 

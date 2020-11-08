@@ -67,7 +67,7 @@ if __name__ == "__main__":
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
-    parser.add_argument("--feat-num", type=int, default=200, help="feature number")
+    parser.add_argument("--feat-num", type=int, default=500, help="feature number")
     parser.add_argument('--scale', type=float, default=1, help='image resize')
     parser.add_argument("--lr", type=float, default=1e-5, help="learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="learning rate")
