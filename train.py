@@ -10,7 +10,6 @@ import argparse
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
-# import torch.utils.data as Data
 from torchvision import transforms as T
 from torch.utils.data import DataLoader
 

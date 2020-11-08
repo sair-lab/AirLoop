@@ -51,11 +51,13 @@ class AirSampler(Sampler):
         self.__iter__()
 
     def __iter__(self):
-        self.batches = []
+        batches = []
         for i, size in enumerate(self.data_sizes):
             num = size - self.bs + 1
             L = torch.randperm(num) if self.shuffle else torch.arange(num)
-            self.batches += [list(zip([i]*self.bs, list(range(L[n], L[n]+self.bs)))) for n in range(num)]
+            batches += [list(zip([i]*self.bs, range(L[n], L[n]+self.bs))) for n in range(num)]
+        L = torch.randperm(len(batches))
+        self.batches = [batches[L[n]] for n in range(len(batches))] if self.shuffle else batches
         return iter(self.batches)
 
     def __len__(self):
@@ -80,7 +82,7 @@ if __name__ == "__main__":
     from torchvision import transforms as T
 
     data = TartanAir('/data/datasets/tartanair', scale=1, transform=T.ToTensor())
-    sampler = AirSampler(data, batch_size=4, shuffle=False)
+    sampler = AirSampler(data, batch_size=4, shuffle=True)
     loader = DataLoader(dataset=data,  batch_sampler=sampler, num_workers=4, pin_memory=True)
 
     for i, (image, depth, pose, K) in enumerate(loader):
