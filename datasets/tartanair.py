@@ -25,9 +25,12 @@ class TartanAir(Dataset):
             self.depth[seq] = sorted(glob.glob(path.join(seq,'depth_left','*.npy')))
             assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
             self.sizes.append(len(self.image[seq]))
+        self.K = self.scaleK(scale)
+
+    def scaleK(self, scale):
         fx, fy, cx, cy = 320, 320, 320, 240
         K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy]]) * scale
-        self.K = torch.cat([K, torch.FloatTensor([0, 0, 1]).view(1,3)], dim=0)
+        return torch.cat([K, torch.FloatTensor([0, 0, 1]).view(1,3)], dim=0)
 
     def __len__(self):
         return sum(self.sizes)
@@ -41,6 +44,35 @@ class TartanAir(Dataset):
         depth = depth if self.depth_transform is None else self.depth_transform(depth)
         pose = self.poses[seq][frame]
         return image, depth, pose, self.K
+
+
+class TartanAirTest(TartanAir):
+    def __init__(self, root, scale=1, transform=None):
+        super().__init__(root)
+        self.transform = transform
+        self.sequences = sorted(glob.glob(os.path.join(root,'mono','*')))
+        self.pose_file = sorted(glob.glob(os.path.join(root,'mono_gt','*.txt')))
+
+        self.image, self.poses, self.sizes = {}, {}, []
+        ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+        for seq, pose in zip(self.sequences, self.pose_file):
+            quaternion = np.loadtxt(pose, dtype=np.float32)
+            self.poses[seq] = ned2den @ pose2mat(quaternion)
+            self.image[seq] = sorted(glob.glob(path.join(seq, '*.png')))
+            assert(len(self.image[seq])==self.poses[seq].shape[0])
+            self.sizes.append(len(self.image[seq]))
+        self.K = self.scaleK(scale)
+
+    def __len__(self):
+        return sum(self.sizes)
+
+    def __getitem__(self, ret):
+        i, frame = ret
+        seq = self.sequences[i]
+        image = Image.open(self.image[seq][frame])
+        image = image if self.transform is None else self.transform(image)
+        pose = self.poses[seq][frame]
+        return image, pose, self.K
 
 
 class AirSampler(Sampler):
@@ -83,7 +115,14 @@ if __name__ == "__main__":
 
     data = TartanAir('/data/datasets/tartanair', scale=1, transform=T.ToTensor())
     sampler = AirSampler(data, batch_size=4, shuffle=True)
-    loader = DataLoader(dataset=data,  batch_sampler=sampler, num_workers=4, pin_memory=True)
+    loader = DataLoader(data, batch_sampler=sampler, num_workers=4, pin_memory=True)
+
+    test_data = TartanAirTest('/data/datasets/tartanair_test', scale=1, transform=T.ToTensor())
+    test_sampler = AirSampler(test_data, batch_size=4, shuffle=True)
+    test_loader = DataLoader(test_data, batch_sampler=test_sampler, num_workers=4, pin_memory=True)
 
     for i, (image, depth, pose, K) in enumerate(loader):
         print(i, image.shape, depth.shape, pose.shape, K.shape)
+
+    for i, (image, pose, K) in enumerate(test_loader):
+        print(i, image.shape, pose.shape, K.shape)

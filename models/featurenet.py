@@ -66,7 +66,7 @@ class FeatureNet(models.VGG):
     def __init__(self, feat_dim=256, feat_num=500):
         super().__init__(models.vgg13().features)
         self.feat_dim, self.feat_num = feat_dim, feat_num
-        # Only adopt the first 19 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
+        # Only adopt the first 15 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
         self.load_state_dict(models.vgg13(pretrained=True).state_dict())
         self.features = nn.Sequential(*list(self.features.children())[:15])
         del self.classifier

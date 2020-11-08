@@ -69,7 +69,7 @@ class ScoreLoss(nn.Module):
         self.debug = Visualization('corners') if debug else debug
 
     def forward(self, scores_dense, imgs, projector):
-        corners = self.get_corners(imgs)
+        corners = self.get_corners(imgs, projector)
 
         if self.debug:
             _B = corners.shape[0]

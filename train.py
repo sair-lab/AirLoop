@@ -14,20 +14,22 @@ from torchvision import transforms as T
 from torch.utils.data import DataLoader
 
 from utils import Visualization
-from datasets import TartanAir
 from datasets import AirSampler
 from models import FeatureNet
 from models import FeatureNetLoss
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
+from datasets import TartanAir, TartanAirTest
 
 
 def test(net, loader, args=None):
     net.eval()
     vis = Visualization('test')
     with torch.no_grad():
-        for idx, (image, K) in enumerate(tqdm.tqdm(loader)):
-            image, K = image.to(args.device), K.to(args.device)
+        for idx, (image, pose, K) in enumerate(tqdm.tqdm(loader)):
+            image = image.to(args.device)
+            pose = pose.to(args.device)
+            K = K.to(args.device)
             descriptors, points, scores = net(image)
             # evaluation script
             if args.visualize:
@@ -63,6 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default='cuda:0', help="cuda or cpu")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
     parser.add_argument("--data-root", type=str, default='/data/datasets/tartanair', help="data location")
+    parser.add_argument("--test-root", type=str, default='/data/datasets/tartanair_test')
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
@@ -90,7 +93,7 @@ if __name__ == "__main__":
     depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
 
     train_data = TartanAir(args.data_root, args.scale, image_transform, depth_transform)
-    test_data = TartanAir(args.data_root, args.scale, image_transform)
+    test_data = TartanAirTest(args.test_root, args.scale, image_transform)
 
     train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)
     test_sampler = AirSampler(test_data, args.batch_size, shuffle=False)
