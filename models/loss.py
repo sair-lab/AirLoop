@@ -151,6 +151,8 @@ class DiscriptorMatchLoss(nn.Module):
         pts_dst = pts_dst.reshape_as(pts_src)
 
         match = torch.cdist(pts_src, pts_dst)<=self.radius
+        invis_bs, invis_bd, invis_n = invis_idx
+        match[invis_bs * B + invis_bd, invis_n, :] = 0
         idx = match.triu(diagonal=1).nonzero(as_tuple=True)
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
         cosine = self.cosine(descriptors[src], descriptors[dst])
