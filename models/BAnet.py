@@ -16,8 +16,8 @@ class BAGDnet(nn.Module):
         self.cx = 320
         self.cy = 240
 
-        self.tMP = torch.nn.Parameter(MPs[:,1:])
-        self.tKF = torch.nn.Parameter(KFs[:,1:].view(-1,4,4))
+        self.tMP = nn.Parameter(MPs[:,1:] + torch.randn_like(MPs[:,1:])*0.001)
+        self.tKF = nn.Parameter(KFs[:,1:].view(-1,4,4))
 
         # indexing the matches of key frames and Map Point
         self.idxMP = MPs[:,0].type(torch.int)
@@ -50,11 +50,16 @@ if __name__ == "__main__":
     import time, math
     import argparse
     import torch.optim as optim
+    from tool import EarlyStopScheduler
 
     parser = argparse.ArgumentParser(description='Test BAGD')
     parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
-    parser.add_argument('--lr', type=float, default=1e-5, help='Random seed.')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Random seed.')
+    parser.add_argument('--min-lr', type=float, default=1e-6, help='Random seed.')
+    parser.add_argument("--factor", type=float, default=0.1, help="factor of lr")
+    parser.add_argument("--patience", type=int, default=5, help="training patience")
+
     args = parser.parse_args()
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -66,7 +71,8 @@ if __name__ == "__main__":
     net = BAGDnet(MPs, KFs)
 
     SmoothLoss = nn.SmoothL1Loss(beta = math.sqrt(5.99))
-    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9)
+    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0)
+    scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
 
     z = Matches[:,2:4]
     for i in range(200):
@@ -74,4 +80,7 @@ if __name__ == "__main__":
         loss = SmoothLoss(output,z)
         loss.backward()
         optimizer.step()
-        print(loss.data.item())
+        print('Epoch: %d, Loss: %.7f'%(i, loss))
+        if scheduler.step(loss):
+            print('Early Stopping!')
+            break
