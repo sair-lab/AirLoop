@@ -95,12 +95,11 @@ class ScoreLoss(nn.Module):
 
         # keep top
         values, idx = corners.view(B, -1).topk(N, dim=1)
-        idx = idx.flatten()
-        coords = torch.stack([idx % W, idx // W]).T.reshape(B, N, 2)  # (x, y), same below
+        coords = torch.stack([idx % W, idx // W], dim=2)  # (x, y), same below
 
         if not projector:
             # keep as-is
-            b = torch.arange(0, B).repeat_interleave(N)
+            b = torch.arange(0, B).repeat_interleave(N).to(idx)
             h, w = idx // W, idx % W
             values = values.flatten()
         else:
@@ -110,7 +109,7 @@ class ScoreLoss(nn.Module):
             coords[tuple(invis_idx)] = -2
             coords_combined = coords.transpose(0, 1).reshape(B, B * N, 2)
             coords_combined = kn.denormalize_pixel_coordinates(coords_combined, H, W).round().to(torch.long)
-            b = torch.arange(B).repeat_interleave(B * N)
+            b = torch.arange(B).repeat_interleave(B * N).to(coords_combined)
             w, h = coords_combined.reshape(-1, 2).T
             mask = w >= 0
             b, h, w, values = b[mask], h[mask], w[mask], values.flatten().repeat(B)[mask]

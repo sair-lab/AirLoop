@@ -45,7 +45,7 @@ class PairwiseProjector(nn.Module):
         proj_p, proj_depth = project_points(points_px_dup, depths_dup, cam_src, cam_dst)
 
         if ret_invis_idx:
-            is_out_of_bound = torch.all((proj_p < -1) & (proj_p > 1), dim=-1)
+            is_out_of_bound = torch.any((proj_p < -1) | (proj_p > 1), dim=-1)
 
             H, W = depths_dense.shape[2:4]
             depths_dense_dup = depths_dense.expand(B, B, H, W).transpose(0, 1).reshape(B**2, 1, H, W)
