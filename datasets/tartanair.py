@@ -4,6 +4,7 @@ import os
 import glob
 import torch
 import numpy as np
+import kornia as kn
 from os import path
 from PIL import Image
 from torch.utils.data import Sampler
@@ -29,8 +30,8 @@ class TartanAir(Dataset):
 
     def scaleK(self, scale):
         fx, fy, cx, cy = 320, 320, 320, 240
-        K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy]]) * scale
-        return torch.cat([K, torch.FloatTensor([0, 0, 1]).view(1,3)], dim=0)
+        K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+        return kn.scale_intrinsics(K, scale)
 
     def __len__(self):
         return sum(self.sizes)
