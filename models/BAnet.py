@@ -2,47 +2,36 @@
 
 import math
 import torch
-import torch.nn as nn
 import numpy as np
+import kornia as kn
+import torch.nn as nn
 from torchvision import models
-import torch.nn.functional as F
-
 
 class BAGDnet(nn.Module):
-    def __init__(self, MPs, KFs):
+    def __init__(self, MPs, KFs, K):
         super().__init__()
-        self.fx = 320
-        self.fy = 320
-        self.cx = 320
-        self.cy = 240
-
-        self.tMP = nn.Parameter(MPs[:,1:] + torch.randn_like(MPs[:,1:])*0.001)
+        self.K = K
+        self.tMP = nn.Parameter(MPs[:,1:])
         self.tKF = nn.Parameter(KFs[:,1:].view(-1,4,4))
 
         # indexing the matches of key frames and Map Point
         self.idxMP = MPs[:,0].type(torch.int)
         self.idxKF = KFs[:,0].type(torch.int)
 
-        # change the point to homogeneous
-        self.tMPhomo = F.pad(input=self.tMP, pad=(0, 1), mode='constant', value=1).unsqueeze(2)
+        self.tMPhomo = kn.convert_points_to_homogeneous(self.tMP)
 
-        #new pytorch provides inverse function for batch
-        self.invtKF = self.tKF.inverse()
-
-    def forward(self, measurements):
+    def forward(self, frame_id, point_id):
         #indexing ## it is the same wiht torch where TODO
-        indexKF = torch.where(measurements[:,0].reshape(-1,1).type(torch.int)==self.idxKF)[1]
-        indexMP = torch.where(measurements[:,1].reshape(-1,1).type(torch.int)==self.idxMP)[1]
+        indexKF = torch.where(frame_id==self.idxKF)[1]
+        indexMP = torch.where(point_id==self.idxMP)[1]
 
         # In test set, tKF is the Twc inverse. We may need to store something else in Memory
-        self.reprojectPoints = self.tKF[indexKF] @ self.tMPhomo[indexMP]
+        points = (self.tKF[indexKF] @ self.tMPhomo[indexMP].unsqueeze(-1)).squeeze(-1)
 
-        # This operation can also be a matmul with matrxi K TODO
-        self.ptx = (self.reprojectPoints[:,0]/self.reprojectPoints[:,2])*self.fx + self.cx
-        self.pty = (self.reprojectPoints[:,1]/self.reprojectPoints[:,2])*self.fy + self.cy
+        Pc = kn.convert_points_from_homogeneous(points)
 
-        obs2d = torch.cat((self.ptx,self.pty),1)
-        return obs2d
+        return kn.project_points(Pc, self.K)
+
 
 
 if __name__ == "__main__":
@@ -64,20 +53,27 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    MPs = torch.from_numpy(np.loadtxt("data/BAtest/MP.txt"))
-    KFs = torch.from_numpy(np.loadtxt("data/BAtest/KF.txt"))
-    Matches = torch.from_numpy(np.loadtxt("data/BAtest/Match.txt"))
+    MPs = torch.from_numpy(np.loadtxt("data/BAtest/MP.txt")).cuda()
+    KFs = torch.from_numpy(np.loadtxt("data/BAtest/KF.txt")).cuda()
+    Matches = torch.from_numpy(np.loadtxt("data/BAtest/Match.txt")).cuda()
 
-    net = BAGDnet(MPs, KFs)
+    fx, fy, cx, cy = 320, 320, 320, 240
+    affine = torch.FloatTensor([[[fx, 0, cx], [0, fy, cy]]])
+    K = kn.convert_affinematrix_to_homography(affine).cuda()
+
+    net = BAGDnet(MPs, KFs, K)
 
     SmoothLoss = nn.SmoothL1Loss(beta = math.sqrt(5.99))
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
 
-    z = Matches[:,2:4]
+    pixel = Matches[:,2:4]
+    frame_id = Matches[:,0,None].type(torch.int)
+    point_id = Matches[:,1,None].type(torch.int)
+
     for i in range(200):
-        output = net(Matches)
-        loss = SmoothLoss(output,z)
+        output = net(frame_id, point_id)
+        loss = SmoothLoss(output, pixel)
         loss.backward()
         optimizer.step()
         print('Epoch: %d, Loss: %.7f'%(i, loss))
