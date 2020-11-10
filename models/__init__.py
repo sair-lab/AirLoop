@@ -6,3 +6,5 @@ from .tool import EarlyStopScheduler
 
 from .featurenet import FeatureNet
 from .loss import FeatureNetLoss
+
+from .BAnet import ConsecutiveMatch

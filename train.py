@@ -17,6 +17,7 @@ from utils import Visualization
 from datasets import AirSampler
 from models import FeatureNet
 from models import FeatureNetLoss
+from models import ConsecutiveMatch
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
 from datasets import TartanAir, TartanAirTest
@@ -25,15 +26,19 @@ from datasets import TartanAir, TartanAirTest
 def test(net, loader, args=None):
     net.eval()
     vis = Visualization('test')
+    match = ConsecutiveMatch()
     with torch.no_grad():
         for idx, (image, pose, K) in enumerate(tqdm.tqdm(loader)):
             image = image.to(args.device)
             pose = pose.to(args.device)
             K = K.to(args.device)
             descriptors, points, scores = net(image)
+            matched, _ = match(descriptors, points)
             # evaluation script
             if args.visualize:
                 vis.show(image, points)
+                for (img0, pts0, img1, pts1) in zip(image[:-1], image[:-1], image[1:], matched):
+                    vis.showmatch(img0, pts0, img1, pts1)
     return 0.9 # accuracy
 
 
@@ -41,6 +46,7 @@ def train(net, loader, criterion, optimizer, args=None):
     net.train()
     train_loss, batches = 0, len(loader)
     vis = Visualization('train', args.debug)
+    match = ConsecutiveMatch()
     enumerater = tqdm.tqdm(enumerate(loader))
     for idx, (images, depths, poses, K) in enumerater:
         images = images.to(args.device)
@@ -56,6 +62,10 @@ def train(net, loader, criterion, optimizer, args=None):
         enumerater.set_description("Loss: %.4f on %d/%d"%(train_loss/(idx+1), idx+1, batches))
         if args.visualize:
             vis.show(images, points)
+            matched, _ = match(descriptors, points)
+            for (img0, pts0, img1, pts1) in zip(images[:-1], points[:-1], images[1:], matched):
+                vis.showmatch(img0, pts0, img1, pts1)
+
     return train_loss/(idx+1)
 
 
