@@ -48,7 +48,7 @@ class ConsecutiveMatch(nn.Module):
         pcos = c.permute((2, 0, 1))
 
         confidence, idx = pcos.max(dim=2)
-        matched = points.gather(1, idx.unsqueeze(2).expand(-1, -1, 2))
+        matched = points[1:].gather(1, idx.unsqueeze(2).expand(-1, -1, 2))
 
         return matched, confidence
 
