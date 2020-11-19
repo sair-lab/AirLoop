@@ -124,7 +124,13 @@ if __name__ == "__main__":
         train_acc = train(net, train_loader, criterion, optimizer, args)
 
         if args.save is not None:
-            torch.save(net, args.save)
+            os.makedirs(os.path.dirname(args.save), exist_ok=True)
+            save_path, save_file_dup = args.save, 0
+            while os.path.exists(save_path):
+                save_file_dup += 1
+                save_path = args.save + '.%d' % save_file_dup
+            torch.save(net, save_path)
+            print('Saved model: %s' % save_path)
 
         if scheduler.step(1-train_acc):
             print('Early Stopping!')
