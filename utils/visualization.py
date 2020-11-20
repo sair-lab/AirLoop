@@ -4,39 +4,47 @@ import cv2
 import torch
 import numpy as np
 import torchvision
+from matplotlib import cm
+import matplotlib.colors as mc
 import kornia.geometry.conversions as C
 
 
 class Visualization():
-    white = (255,255,255)
-    black = (  0,  0,  0)
-    blue  = (255,  0,  0)
-    red   = (  0,  0,255)
     def __init__(self, winname=None, debug=False):
         self.winname, self.debug = winname, debug
         self.radius = 1
         self.thickness = 1
 
-    def show(self, batch, points):
-        b, c, h, w = batch.shape
-        points = C.denormalize_pixel_coordinates(points, h, w)
-        for i in range(batch.size(0)):
-            grid = torchvision.utils.make_grid(batch[i], padding=0)
-            image = torch2cv(grid).copy()
-            image = circles(image, points[i], self.radius, self.red, self.thickness)
-            cv2.imshow(self.winname+str(i), image)
+    def show(self, images, points=None, color='red', nrow=2, values=None, vmin=None, vmax=None):
+        b, c, h, w = images.shape
+        images = torch2cv(images)
+        if points is not None:
+            points = C.denormalize_pixel_coordinates(points, h, w)
+            for i, pts in enumerate(points):
+                colors = get_colors(color, [0]*len(pts) if values is None else values[i], vmin, vmax)
+                images[i] = circles(images[i], pts, self.radius, colors, self.thickness)
+        if nrow is not None:
+            images = torch.tensor(images.copy()).permute((0, 3, 1, 2))
+            grid = torchvision.utils.make_grid(images, nrow=nrow, padding=1).permute((1, 2, 0))
+            cv2.imshow(self.winname, grid.numpy())
+        else:
+            for i, img in enumerate(images):
+                cv2.imshow(self.winname+str(i), img)
         cv2.waitKey(1)
 
-    def showmatch(self, img1, pts1, img2, pts2):
+    def showmatch(self, img1, pts1, img2, pts2, color='blue', values=None, vmin=None, vmax=None):
+        assert len(pts1) == len(pts2)
         h, w = img1.size(-2), img1.size(-1)
         pts1 = C.denormalize_pixel_coordinates(pts1, h, w)
         pts2 = C.denormalize_pixel_coordinates(pts2, h, w)
-        img1, img2 = torch2cv(img1).copy(), torch2cv(img2).copy()
-        image = matches(img1,pts1,img2,pts2,self.blue,2)
+        img1, img2 = torch2cv(torch.stack([img1, img2]))
+        colors = get_colors(color, [0]*len(pts1) if values is None else values, vmin, vmax)
+        image = matches(img1, pts1, img2, pts2, colors)
         cv2.imshow(self.winname, image)
         cv2.waitKey(1)
 
     def reprojectshow(self, imgs, pts_src, pts_dst, src, dst):
+        # TODO not adapted for change in torch2cv
         pts_src, pts_dst = pts_src[src], pts_src[dst]
         for i in range(src[0].size(0)):
             pts1 = pts_src[i].unsqueeze(0)
@@ -48,20 +56,45 @@ class Visualization():
             cv2.waitKey(1)
 
 
-def matches(img1, pts1, img2, pts2, color, flags):
+def matches(img1, pts1, img2, pts2, colors, circ_radius=3, thickness=1):
     ''' Assume pts1 are matched with pts2, respectively.
     '''
-    kpts1 = [cv2.KeyPoint(x=int(pts1[i,0]), y=int(pts1[i,1]), _size=1) for i in range(pts1.size(0))]
-    kpts2 = [cv2.KeyPoint(x=int(pts2[i,0]), y=int(pts2[i,1]), _size=1) for i in range(pts2.size(0))]
-    matches = [cv2.DMatch(i,i,0) for i in range(min(pts1.size(0),pts2.size(0)))]
-    return cv2.drawMatches(img1,kpts1,img2,kpts2,matches,None,matchColor=color, flags=flags)
+    H1, W1, C = img1.shape
+    H2, W2, _ = img2.shape
+    new_img = np.zeros((max(H1, H2), W1 + W2, C), img1.dtype)
+    new_img[:H1, :W1], new_img[:H2, W1:W1+W2] = img1,  img2
+    new_img = circles(new_img, pts1, circ_radius, colors, thickness)
+    pts2[:, 0] += W1
+    new_img = circles(new_img, pts2, circ_radius, colors, thickness)
+    return lines(new_img, pts1, pts2, colors, thickness)
 
 
-def circles(image, points, radius, color, thickness):
-    for i in range(points.size(0)):
-        image = cv2.circle(image, tuple(points[i]), radius, color, thickness, cv2.LINE_AA)
+def circles(image, points, radius, colors, thickness):
+    for pt, c in zip(points, colors):
+        image = cv2.circle(image.copy(), tuple(pt), radius, tuple(c.tolist()), thickness, cv2.LINE_AA)
     return image
 
 
-def torch2cv(image):
-    return (255*image).type(torch.uint8).cpu().numpy()[::-1].transpose((1, 2, 0))
+def lines(image, pts1, pts2, colors, thickness):
+    for pt1, pt2, c in zip(pts1, pts2, colors):
+        image = cv2.line(image.copy(), tuple(pt1), tuple(pt2), tuple(c.tolist()), thickness, cv2.LINE_AA)
+    return image
+
+
+def get_colors(name, values=[0], vmin=None, vmax=None):
+    if name in mc.get_named_colors_mapping():
+        rgb = mc.to_rgba_array(name)[0, :3]
+        rgb = np.tile(rgb, (len(values), 1))
+    else:
+        values = np.array(values)
+        assert len(values.shape) == 1
+        normalize = mc.Normalize(vmin=vmin, vmax=vmax)
+        cmap = cm.get_cmap(name)
+        rgb = cmap(normalize(values))
+    return (rgb[:, 2::-1] * 255).astype(int)
+
+
+def torch2cv(images):
+    rgb = (255 * images).type(torch.uint8).cpu().numpy()
+    bgr = rgb[:, ::-1, ...].transpose((0, 2, 3, 1))
+    return bgr

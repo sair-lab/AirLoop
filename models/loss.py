@@ -51,9 +51,9 @@ class DistinctionLoss(nn.Module):
         self.cosine = nn.CosineSimilarity(dim=-2)
 
     def forward(self, descriptors):
-        # pairwise cosine
-        x = descriptors.permute((1, 2, 0))
-        y = descriptors.permute((1, 2, 0)).unsqueeze(1)
+        # batch pairwise cosine
+        x = descriptors.permute((1, 2, 0)).unsqueeze(1)
+        y = descriptors.permute((1, 2, 0))
         c = self.cosine(x, y)
         pcos = c.permute((2, 0, 1))
         return self.relu(pcos).mean()

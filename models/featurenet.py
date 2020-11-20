@@ -77,6 +77,7 @@ class FeatureNet(models.VGG):
                 IndexSelect(dim=1, index=torch.arange(64)),
                 nn.PixelShuffle(upscale_factor=8),
                 ConstantBorder(border=4, value=0))
+        self.nms = nms.NonMaximaSuppression2d((7, 7))
 
         self.descriptors = nn.Sequential(
                 nn.Conv2d(256, self.feat_dim, kernel_size=3, stride=1, padding=1), nn.ReLU(),
@@ -98,7 +99,7 @@ class FeatureNet(models.VGG):
 
         pointness = self.scores(features)
 
-        scores, points = pointness.view(B,-1,1).topk(self.feat_num, dim=1)
+        scores, points = self.nms(pointness).view(B,-1,1).topk(self.feat_num, dim=1)
 
         points = torch.cat((points%W, points//W), dim=-1)
 

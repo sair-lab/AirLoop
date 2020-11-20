@@ -17,6 +17,7 @@ from utils import Visualization
 from datasets import AirSampler
 from models import FeatureNet
 from models import FeatureNetLoss
+from models import ConsecutiveMatch
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
 from datasets import TartanAir, TartanAirTest
@@ -25,22 +26,28 @@ from datasets import TartanAir, TartanAirTest
 def test(net, loader, args=None):
     net.eval()
     vis = Visualization('test')
+    match = ConsecutiveMatch()
     with torch.no_grad():
         for idx, (image, pose, K) in enumerate(tqdm.tqdm(loader)):
             image = image.to(args.device)
             pose = pose.to(args.device)
             K = K.to(args.device)
             descriptors, points, scores = net(image)
+            matched, _ = match(descriptors, points)
             # evaluation script
             if args.visualize:
                 vis.show(image, points)
+                for (img0, pts0, img1, pts1) in zip(image[:-1], image[:-1], image[1:], matched):
+                    vis.showmatch(img0, pts0, img1, pts1)
     return 0.9 # accuracy
 
 
 def train(net, loader, criterion, optimizer, args=None):
     net.train()
     train_loss, batches = 0, len(loader)
-    vis = Visualization('train', args.debug)
+    vis_train = Visualization('train', args.debug)
+    vis_match = Visualization('match', args.debug)
+    match = ConsecutiveMatch()
     enumerater = tqdm.tqdm(enumerate(loader))
     for idx, (images, depths, poses, K) in enumerater:
         images = images.to(args.device)
@@ -55,7 +62,13 @@ def train(net, loader, criterion, optimizer, args=None):
         train_loss += loss.item()
         enumerater.set_description("Loss: %.4f on %d/%d"%(train_loss/(idx+1), idx+1, batches))
         if args.visualize:
-            vis.show(images, points)
+            vis_train.show(images, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), vmin=0, vmax=0.1)
+            matched, confidence = match(descriptors[[0, -1]], points[[0, -1]])
+            for (img0, pts0, img1, pts1, conf) in zip(images[[0]], points[[0]], images[[-1]], matched, confidence):
+                top_conf, top_idx = conf.topk(100)
+                top_conf = top_conf.detach().cpu().numpy()
+                vis_match.showmatch(img0, pts0[top_idx], img1, pts1[top_idx], 'hot', top_conf, 0.9, 1)
+
     return train_loss/(idx+1)
 
 

@@ -33,6 +33,25 @@ class BAGDnet(nn.Module):
         return kn.project_points(Pc, self.K)
 
 
+class ConsecutiveMatch(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cosine = nn.CosineSimilarity(dim=-2)
+
+    def forward(self, descriptors, points):
+        desc_src = descriptors[:-1]
+        desc_dst = descriptors[1:]
+        # batch pairwise cosine
+        x = desc_src.permute((1, 2, 0)).unsqueeze(1)
+        y = desc_dst.permute((1, 2, 0))
+        c = self.cosine(x, y)
+        pcos = c.permute((2, 0, 1))
+
+        confidence, idx = pcos.max(dim=2)
+        matched = points[1:].gather(1, idx.unsqueeze(2).expand(-1, -1, 2))
+
+        return matched, confidence
+
 
 if __name__ == "__main__":
     '''Test codes'''
