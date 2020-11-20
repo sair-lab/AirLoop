@@ -23,7 +23,7 @@ class LM(Optimizer):
             J = torch.cat([p.grad.data.view(1,-1) for p in group['params'] if p.grad is not None],-1)
             A = (J.T @ J) + group['df'] * torch.eye(J.size(-1)).to(J)
             D = J.T.cholesky_solve(A.cholesky()).split(numels)
-            [p.add_(d.view(p.shape), alpha=-loss) for p,d in zip(group['params'], D) if p.grad is not None]
+            [p.add_(-d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
 
 
 if __name__ == "__main__":
@@ -59,7 +59,7 @@ if __name__ == "__main__":
     for idx in range(1000):
         loss = net()
         loss.backward()
-        optimizer.step(loss.item())
+        optimizer.step(loss)
         print('Quadratic loss %.4f @ %d iteration'%(loss, idx))
 
 
@@ -107,6 +107,6 @@ if __name__ == "__main__":
             outputs = net(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
-            optimizer.step(loss.item())
+            optimizer.step(loss)
         acc = performance(test_loader, net, args.device)
         print('MNIST acc: %.4f @ %d epoch'%(acc, idx))
