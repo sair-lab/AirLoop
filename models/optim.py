@@ -13,8 +13,7 @@ class LM(Optimizer):
     def __init__(self, params, df):
         defaults = dict(df=df)
         super().__init__(params, defaults)
-        if df < 0.0:
-            raise ValueError("Invalid damping factor: {}".format(df))
+        assert df > 0, 'Invalid Damping Factor.'
 
     @torch.no_grad()
     def step(self, loss):
@@ -22,7 +21,10 @@ class LM(Optimizer):
             numels = [p.numel() for p in group['params'] if p.grad is not None]
             J = torch.cat([p.grad.data.view(1,-1) for p in group['params'] if p.grad is not None],-1)
             A = (J.T @ J) + group['df'] * torch.eye(J.size(-1)).to(J)
-            D = J.T.cholesky_solve(A.cholesky()).split(numels)
+            try: # Faster but sometimes singular error
+                D = J.T.cholesky_solve(A.cholesky()).split(numels)
+            except: # Slower but singular is fine
+                D = (A.pinverse() @ J.T).split(numels)
             [p.add_(-d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
 
 
@@ -32,6 +34,7 @@ if __name__ == "__main__":
     '''
     import argparse
     from torch import nn
+    from tool import Timer
     import torch.utils.data as Data
     from torchvision.datasets import MNIST
     from torchvision import transforms as T
@@ -55,13 +58,14 @@ if __name__ == "__main__":
     net = QuadNet().to(args.device)
     optimizer = LM(net.parameters(), df=args.df)
 
+    timer = Timer()
     print('Testing Quadratic function...')
     for idx in range(1000):
         loss = net()
         loss.backward()
         optimizer.step(loss)
-        print('Quadratic loss %.4f @ %d iteration'%(loss, idx))
-
+        if idx%100 == 0:
+            print('Quad loss %.4f @ %dit, Timing: %.3fs'%(loss, idx, timer.end()))
 
     # Hard Test
     class LeNet(nn.Module):
@@ -109,4 +113,4 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step(loss)
         acc = performance(test_loader, net, args.device)
-        print('MNIST acc: %.4f @ %d epoch'%(acc, idx))
+        print('MNIST acc: %.4f @ %d epoch, Timing: %.3fs'%(acc, idx, timer.end()))
