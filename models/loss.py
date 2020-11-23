@@ -150,15 +150,23 @@ class DiscriptorMatchLoss(nn.Module):
         pts_src = pts_src.unsqueeze(0).expand_as(pts_dst).reshape(B**2, N, 2)
         pts_dst = pts_dst.reshape_as(pts_src)
 
-        match = torch.cdist(pts_src, pts_dst)<=self.radius
+        dist = torch.cdist(pts_src, pts_dst)
+
+        match = dist<=self.radius
         invis_bs, invis_bd, invis_n = invis_idx
         match[invis_bs * B + invis_bd, invis_n, :] = 0
         idx = match.triu(diagonal=1).nonzero(as_tuple=True)
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
         cosine = self.cosine(descriptors[src], descriptors[dst])
 
+        _match = dist>self.radius
+        _match[invis_bs * B + invis_bd, invis_n, :] = 0
+        _idx = _match.triu(diagonal=1).nonzero(as_tuple=True)
+        _src, _dst = [_idx[0]%B, _idx[1]], [_idx[0]//B, _idx[2]]
+        _cosine = self.cosine(descriptors[_src], descriptors[_dst])
+
         if self.debug:
             for b, n, b1, n1 in zip(src[0], src[1], dst[0], dst[1]):
                 print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
 
-        return (1 - cosine).mean()
+        return (1 - cosine.mean()) + _cosine.mean()
