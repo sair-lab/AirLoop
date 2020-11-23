@@ -48,6 +48,7 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
     train_loss, batches = deque([0] * loss_ave), len(loader)
     vis_train = Visualization('train', args.debug)
     vis_match = Visualization('match', args.debug)
+    vis_score = Visualization('score', args.debug)
     match = ConsecutiveMatch()
     enumerater = tqdm.tqdm(enumerate(loader))
     for idx, (images, depths, poses, K) in enumerater:
@@ -56,7 +57,7 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
         poses = poses.to(args.device)
         K = K.to(args.device)
         optimizer.zero_grad()
-        descriptors, points, pointness = net(images)
+        descriptors, points, pointness, scores = net(images)
         loss = criterion(descriptors, points, pointness, depths, poses, K, images)
         loss.backward()
         optimizer.step()
@@ -67,6 +68,9 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
         enumerater.set_description("Loss: %.4f on %d/%d"%(sum(train_loss)/(loss_ave), idx+1, batches))
         if idx > args.visualize:
             vis_train.show(images, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), vmin=0, vmax=0.1)
+
+            vis_score.show(pointness, color='hot')
+
             matched, confidence = match(descriptors[[0, -1]], points[[0, -1]])
             for (img0, pts0, img1, pts1, conf) in zip(images[[0]], points[[0]], images[[-1]], matched, confidence):
                 top_conf, top_idx = conf.topk(100)

@@ -115,7 +115,7 @@ class FeatureNet(models.VGG):
 
         descriptors = self.graph(descriptors)
 
-        return descriptors, points, pointness if self.training else scores
+        return descriptors, points, pointness, scores
 
 
 if __name__ == "__main__":

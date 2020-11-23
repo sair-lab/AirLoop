@@ -17,12 +17,18 @@ class Visualization():
 
     def show(self, images, points=None, color='red', nrow=2, values=None, vmin=None, vmax=None):
         b, c, h, w = images.shape
-        images = torch2cv(images)
+        if c == 3:
+            images = torch2cv(images)
+        elif c == 1: # show colored values
+            images = images.detach().cpu().numpy().transpose((0, 2, 3, 1))
+            images = get_colors(color, images.squeeze(-1), vmin, vmax)
+
         if points is not None:
             points = C.denormalize_pixel_coordinates(points, h, w)
             for i, pts in enumerate(points):
                 colors = get_colors(color, [0]*len(pts) if values is None else values[i], vmin, vmax)
                 images[i] = circles(images[i], pts, self.radius, colors, self.thickness)
+
         if nrow is not None:
             images = torch.tensor(images.copy()).permute((0, 3, 1, 2))
             grid = torchvision.utils.make_grid(images, nrow=nrow, padding=1).permute((1, 2, 0))
@@ -87,11 +93,10 @@ def get_colors(name, values=[0], vmin=None, vmax=None):
         rgb = np.tile(rgb, (len(values), 1))
     else:
         values = np.array(values)
-        assert len(values.shape) == 1
         normalize = mc.Normalize(vmin=vmin, vmax=vmax)
         cmap = cm.get_cmap(name)
         rgb = cmap(normalize(values))
-    return (rgb[:, 2::-1] * 255).astype(int)
+    return (rgb[..., 2::-1] * 255).astype(np.uint8)
 
 
 def torch2cv(images):
