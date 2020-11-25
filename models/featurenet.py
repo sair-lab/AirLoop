@@ -40,9 +40,22 @@ class GridSample(nn.Module):
     def forward(self, inputs):
         features, points = inputs
         dim = len(points.shape)
-        points = points.view(features.size(0),1,-1,2) if dim == 3 else points
-        output = F.grid_sample(features, points, self.mode, align_corners=True).permute(0,2,3,1)
+        points = points.view(features.size(0), 1, -1, 2) if dim == 3 else points
+        output = F.grid_sample(features, points, self.mode, align_corners=True).permute(0, 2, 3, 1)
         return output.squeeze(1) if dim == 3 else output
+
+
+class PixelUnshuffle(nn.Module):
+    def __init__(self, downscale_factor):
+        super().__init__()
+        self.factor = downscale_factor
+
+    def forward(self, x):
+        (N, C, H, W), S = x.shape, self.factor
+        H, W = H // S, W // S
+        x = x.reshape(N, C, H, S, W, S).permute(0, 1, 3, 5, 2, 4)
+        x = x.reshape(N, C * S**2, H, W)
+        return x
 
 
 class GraphAttn(nn.Module):
@@ -57,9 +70,52 @@ class GraphAttn(nn.Module):
 
     def forward(self, x):
         h = self.tran(x)
-        att = self.att1(h) + self.att2(h).permute(0,2,1)
+        att = self.att1(h) + self.att2(h).permute(0, 2, 1)
         adj = self.norm(self.leakyrelu(att.squeeze()))
         return self.alpha * h + (1-self.alpha) * adj @ h
+
+
+class ScoreHead(nn.Module):
+    def __init__(self, in_scale):
+        super().__init__()
+        self.scores_vgg = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ReLU())
+        self.scores_img = nn.Sequential(
+            nn.BatchNorm2d(3),
+            nn.Conv2d(3, 8, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(8, 16, kernel_size=3, padding=1), nn.ReLU(),
+            PixelUnshuffle(downscale_factor=in_scale))
+        self.combine = nn.Sequential(
+            nn.Conv2d(64 + 16 * in_scale**2, 128, kernel_size=3, padding=1), nn.Softmax(dim=1),
+            IndexSelect(dim=1, index=torch.arange(in_scale**2)),
+            nn.PixelShuffle(upscale_factor=in_scale),
+            ConstantBorder(border=4, value=0))
+
+    def forward(self, images, features):
+        scores_vgg, scores_img = self.scores_vgg(features), self.scores_img(images)
+        return self.combine(torch.cat([scores_vgg, scores_img], dim=1))
+
+
+class DescriptorHead(nn.Module):
+    def __init__(self, feat_dim, feat_num):
+        super().__init__()
+        self.feat_dim, self.feat_num = feat_dim, feat_num
+
+        self.descriptor = nn.Sequential(
+            nn.Conv2d(256, self.feat_dim, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(self.feat_dim, self.feat_dim, kernel_size=1))
+        self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
+        self.encoder = nn.Sequential(nn.Linear(3, 256), nn.ReLU(), nn.Linear(256, self.feat_dim))
+        self.residual = nn.Sequential(
+            nn.Conv2d(3, 128, kernel_size=9, padding=4), nn.ReLU(),
+            nn.Conv2d(128, self.feat_dim, kernel_size=3, padding=1))
+
+    def forward(self, images, features, points, scores):
+        descriptors, residual = self.descriptor(features), self.residual(images)
+        descriptors = self.sample((descriptors, points)) + self.sample((residual, points))
+        descriptors = descriptors + self.encoder(torch.cat([points, scores], dim=-1))
+        return descriptors
 
 
 class FeatureNet(models.VGG):
@@ -71,25 +127,12 @@ class FeatureNet(models.VGG):
         self.features = nn.Sequential(*list(self.features.children())[:15])
         del self.classifier
 
-        self.scores = nn.Sequential(
-                nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1), nn.ReLU(),
-                nn.Conv2d(128, 65, kernel_size=1, stride=1, padding=0), nn.Softmax(dim=1),
-                IndexSelect(dim=1, index=torch.arange(64)),
-                nn.PixelShuffle(upscale_factor=8),
-                ConstantBorder(border=4, value=0))
-        self.nms = nms.NonMaximaSuppression2d((7, 7))
-
-        self.descriptors = nn.Sequential(
-                nn.Conv2d(256, self.feat_dim, kernel_size=3, stride=1, padding=1), nn.ReLU(),
-                nn.Conv2d(self.feat_dim, self.feat_dim, kernel_size=1, stride=1, padding=0))
-        self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
-        self.encoder = nn.Sequential(nn.Linear(3, 256), nn.ReLU(), nn.Linear(256, self.feat_dim))
-        self.residual = nn.Sequential(
-                nn.Conv2d(3, 128, kernel_size=9, padding=4), nn.ReLU(),
-                nn.Conv2d(128, self.feat_dim, kernel_size=3, padding=1))
+        self.scores = ScoreHead(8)
+        self.descriptors = DescriptorHead(feat_dim, feat_num)
         self.graph = nn.Sequential(
-                GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9), nn.ReLU(),
-                GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9))
+            GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9), nn.ReLU(),
+            GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9))
+        self.nms = nms.NonMaximaSuppression2d((5, 5))
 
     def forward(self, inputs):
 
@@ -97,21 +140,15 @@ class FeatureNet(models.VGG):
 
         features = self.features(inputs)
 
-        pointness = self.scores(features)
+        pointness = self.scores(inputs, features)
 
-        scores, points = self.nms(pointness).view(B,-1,1).topk(self.feat_num, dim=1)
+        scores, points = self.nms(pointness).view(B, -1, 1).topk(self.feat_num, dim=1)
 
-        points = torch.cat((points%W, points//W), dim=-1)
+        points = torch.cat((points % W, points // W), dim=-1)
 
         points = C.normalize_pixel_coordinates(points, H, W)
 
-        descriptors = self.descriptors(features)
-
-        residual = self.residual(inputs)
-
-        descriptors = self.sample((descriptors, points)) + self.sample((residual, points))
-
-        descriptors = descriptors + self.encoder(torch.cat([points, scores], dim=-1))
+        descriptors = self.descriptors(inputs, features, points, scores)
 
         descriptors = self.graph(descriptors)
 
@@ -127,17 +164,17 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
     parser.add_argument("--batch-size", type=int, default=10, help="number of minibatch size")
-    parser.add_argument('--crop-size', nargs='+', type=int, default=[320,320], help='image crop size')
+    parser.add_argument('--crop-size', nargs='+', type=int, default=[320, 320], help='image crop size')
     args = parser.parse_args()
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
     net = FeatureNet(512, 200).to(args.device).eval()
-    inputs = torch.randn(args.batch_size,3,*args.crop_size).to(args.device)
+    inputs = torch.randn(args.batch_size, 3, *args.crop_size).to(args.device)
 
     timer = Timer()
     with torch.no_grad():
         for i in range(5):
-            descriptors, points, scores = net(inputs)
-            print(i, 'D:',descriptors.shape, 'P:',points.shape, 'S:',scores.shape)
+            descriptors, points, pointness, scores = net(inputs)
+            print('%d D: %s, P: (%s, %s), S: %s' % (i, descriptors.shape, pointness.shape, points.shape, scores.shape))
     print('time:', timer.end())
