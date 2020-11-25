@@ -12,7 +12,7 @@ from models.featurenet import GridSample
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 1, 1], K=None, debug=False):
+    def __init__(self, beta=[1, 0.5, 1], K=None, debug=False):
         super().__init__()
         self.beta = beta
         self.sample = GridSample()
@@ -81,7 +81,10 @@ class ScoreLoss(nn.Module):
             _pts = C.normalize_pixel_coordinates(_pts, imgs.shape[2], imgs.shape[3])
             self.debug.show(imgs, _pts)
 
-        return self.bceloss(scores_dense, corners)
+        # smoothness
+        lap = kn.filters.laplacian(scores_dense, 5)
+
+        return self.bceloss(scores_dense, corners) + (scores_dense * torch.exp(-lap)).mean() * 10
 
     def get_corners(self, imgs, projector=None):
         (B, _, H, W), N = imgs.shape, self.num_corners
@@ -150,15 +153,23 @@ class DiscriptorMatchLoss(nn.Module):
         pts_src = pts_src.unsqueeze(0).expand_as(pts_dst).reshape(B**2, N, 2)
         pts_dst = pts_dst.reshape_as(pts_src)
 
-        match = torch.cdist(pts_src, pts_dst)<=self.radius
+        dist = torch.cdist(pts_src, pts_dst)
+
+        match = dist<=self.radius
         invis_bs, invis_bd, invis_n = invis_idx
         match[invis_bs * B + invis_bd, invis_n, :] = 0
         idx = match.triu(diagonal=1).nonzero(as_tuple=True)
         src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
         cosine = self.cosine(descriptors[src], descriptors[dst])
 
+        _match = dist>self.radius
+        _match[invis_bs * B + invis_bd, invis_n, :] = 0
+        _idx = _match.triu(diagonal=1).nonzero(as_tuple=True)
+        _src, _dst = [_idx[0]%B, _idx[1]], [_idx[0]//B, _idx[2]]
+        _cosine = self.cosine(descriptors[_src], descriptors[_dst])
+
         if self.debug:
             for b, n, b1, n1 in zip(src[0], src[1], dst[0], dst[1]):
                 print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
 
-        return (1 - cosine).mean()
+        return (1 - cosine.mean()) + _cosine.mean()

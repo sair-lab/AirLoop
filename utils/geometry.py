@@ -9,9 +9,9 @@ from scipy.spatial.transform import Rotation as R
 
 
 class PairwiseProjector(nn.Module):
-    def __init__(self, K=None, eps=1e-2):
+    def __init__(self, K=None, eps=1e-2, max_depth=1000):
         super().__init__()
-        self.K, self.eps = K, eps
+        self.K, self.eps, self.max_depth = K, eps, max_depth
 
     def forward(self, points, depths_dense, poses, K=None, ret_invis_idx=True):
         if K is not None:
@@ -50,7 +50,7 @@ class PairwiseProjector(nn.Module):
             H, W = depths_dense.shape[2:4]
             depths_dense_dup = depths_dense.expand(B, B, H, W).transpose(0, 1).reshape(B**2, 1, H, W)
             depths_dst = F.grid_sample(depths_dense_dup, proj_p[:, None], align_corners=False).squeeze(1).squeeze(1)
-            is_occluded = proj_depth > depths_dst + self.eps
+            is_occluded = (proj_depth > depths_dst + self.eps) | (depths_dst > self.max_depth)
 
             pair_idx, point_idx = torch.nonzero(is_out_of_bound | is_occluded, as_tuple=True)
 

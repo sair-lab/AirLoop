@@ -10,6 +10,7 @@ import argparse
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
+from collections import deque
 from torchvision import transforms as T
 from torch.utils.data import DataLoader
 
@@ -42,11 +43,12 @@ def test(net, loader, args=None):
     return 0.9 # accuracy
 
 
-def train(net, loader, criterion, optimizer, args=None):
+def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
     net.train()
-    train_loss, batches = 0, len(loader)
+    train_loss, batches = deque([0] * loss_ave), len(loader)
     vis_train = Visualization('train', args.debug)
     vis_match = Visualization('match', args.debug)
+    vis_score = Visualization('score', args.debug)
     match = ConsecutiveMatch()
     enumerater = tqdm.tqdm(enumerate(loader))
     for idx, (images, depths, poses, K) in enumerater:
@@ -55,21 +57,27 @@ def train(net, loader, criterion, optimizer, args=None):
         poses = poses.to(args.device)
         K = K.to(args.device)
         optimizer.zero_grad()
-        descriptors, points, pointness = net(images)
+        descriptors, points, pointness, scores = net(images)
         loss = criterion(descriptors, points, pointness, depths, poses, K, images)
         loss.backward()
         optimizer.step()
-        train_loss += loss.item()
-        enumerater.set_description("Loss: %.4f on %d/%d"%(train_loss/(idx+1), idx+1, batches))
-        if args.visualize:
-            vis_train.show(images, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), vmin=0, vmax=0.1)
+        train_loss.popleft()
+        train_loss.append(loss.item())
+        if np.isnan(loss.item()):
+            print('Warning: loss is nan during iteration %d.' % idx)
+        enumerater.set_description("Loss: %.4f on %d/%d"%(sum(train_loss)/(loss_ave), idx+1, batches))
+        if idx > args.visualize:
+            vis_train.show(images, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy())
+
+            vis_score.show(pointness, color='hot', vmax=0.01)
+
             matched, confidence = match(descriptors[[0, -1]], points[[0, -1]])
             for (img0, pts0, img1, pts1, conf) in zip(images[[0]], points[[0]], images[[-1]], matched, confidence):
                 top_conf, top_idx = conf.topk(100)
                 top_conf = top_conf.detach().cpu().numpy()
                 vis_match.showmatch(img0, pts0[top_idx], img1, pts1[top_idx], 'hot', top_conf, 0.9, 1)
 
-    return train_loss/(idx+1)
+    return sum(train_loss)/(loss_ave)
 
 
 if __name__ == "__main__":
@@ -94,9 +102,8 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--num-workers", type=int, default=4, help="workers of dataloader")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
-    parser.add_argument("--visualize", dest='visualize', action='store_true')
-    parser.add_argument("--debug", dest='debug', action='store_true')
-    parser.set_defaults(visualize=True, debug=False)
+    parser.add_argument("--visualize", type=int, nargs='?', default=np.inf, action='store', const=1000, help='Visualize starting from iteration')
+    parser.add_argument("--debug", default=False, action='store_true')
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -124,7 +131,13 @@ if __name__ == "__main__":
         train_acc = train(net, train_loader, criterion, optimizer, args)
 
         if args.save is not None:
-            torch.save(net, args.save)
+            os.makedirs(os.path.dirname(args.save), exist_ok=True)
+            save_path, save_file_dup = args.save, 0
+            while os.path.exists(save_path):
+                save_file_dup += 1
+                save_path = args.save + '.%d' % save_file_dup
+            torch.save(net, save_path)
+            print('Saved model: %s' % save_path)
 
         if scheduler.step(1-train_acc):
             print('Early Stopping!')
