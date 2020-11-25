@@ -67,9 +67,9 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
             print('Warning: loss is nan during iteration %d.' % idx)
         enumerater.set_description("Loss: %.4f on %d/%d"%(sum(train_loss)/(loss_ave), idx+1, batches))
         if idx > args.visualize:
-            vis_train.show(images, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), vmin=0, vmax=0.1)
+            vis_train.show(images, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy())
 
-            vis_score.show(pointness, color='hot')
+            vis_score.show(pointness, color='hot', vmax=0.01)
 
             matched, confidence = match(descriptors[[0, -1]], points[[0, -1]])
             for (img0, pts0, img1, pts1, conf) in zip(images[[0]], points[[0]], images[[-1]], matched, confidence):

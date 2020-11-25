@@ -12,7 +12,7 @@ from models.featurenet import GridSample
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 1, 1], K=None, debug=False):
+    def __init__(self, beta=[1, 0.5, 1], K=None, debug=False):
         super().__init__()
         self.beta = beta
         self.sample = GridSample()
@@ -81,7 +81,10 @@ class ScoreLoss(nn.Module):
             _pts = C.normalize_pixel_coordinates(_pts, imgs.shape[2], imgs.shape[3])
             self.debug.show(imgs, _pts)
 
-        return self.bceloss(scores_dense, corners)
+        # smoothness
+        lap = kn.filters.laplacian(scores_dense, 5)
+
+        return self.bceloss(scores_dense, corners) + (scores_dense * torch.exp(-lap)).mean() * 10
 
     def get_corners(self, imgs, projector=None):
         (B, _, H, W), N = imgs.shape, self.num_corners
