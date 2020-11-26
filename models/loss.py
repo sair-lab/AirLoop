@@ -15,7 +15,6 @@ class FeatureNetLoss(nn.Module):
     def __init__(self, beta=[1, 0.5, 1], K=None, debug=False):
         super().__init__()
         self.beta = beta
-        self.sample = GridSample()
         self.distinction = DistinctionLoss()
         self.projector = PairwiseProjector(K)
         self.score_loss = ScoreLoss(debug=debug)
@@ -62,14 +61,16 @@ class DistinctionLoss(nn.Module):
 class ScoreLoss(nn.Module):
     def __init__(self, radius=8, num_corners=500, debug=False):
         super(ScoreLoss, self).__init__()
-        self.radius = radius
         self.bceloss = nn.BCELoss()
         self.corner_det = kf.CornerGFTT()
         self.num_corners = num_corners
+        self.pool = nn.MaxPool2d(kernel_size=radius, return_indices=True)
+        self.unpool = nn.MaxUnpool2d(kernel_size=radius)
         self.debug = Visualization('corners') if debug else debug
 
     def forward(self, scores_dense, imgs, projector):
         corners = self.get_corners(imgs, projector)
+        lap = kn.filters.laplacian(scores_dense, 5) # smoothness
 
         if self.debug:
             _B = corners.shape[0]
@@ -81,9 +82,6 @@ class ScoreLoss(nn.Module):
             _pts = C.normalize_pixel_coordinates(_pts, imgs.shape[2], imgs.shape[3])
             self.debug.show(imgs, _pts)
 
-        # smoothness
-        lap = kn.filters.laplacian(scores_dense, 5)
-
         return self.bceloss(scores_dense, corners) + (scores_dense * torch.exp(-lap)).mean() * 10
 
     def get_corners(self, imgs, projector=None):
@@ -91,10 +89,8 @@ class ScoreLoss(nn.Module):
         corners = kf.nms2d(self.corner_det(kn.rgb_to_grayscale(imgs)), (5, 5))
 
         # only one in patch
-        corners = F.unfold(corners, kernel_size=self.radius, stride=self.radius)
-        mask = (corners > 0) & (corners == corners.max(dim=1, keepdim=True).values)
-        corners = corners * mask.to(corners)
-        corners = F.fold(corners, (H, W), kernel_size=self.radius, stride=self.radius)
+        output, indices = self.pool(corners)
+        corners = self.unpool(output, indices)
 
         # keep top
         values, idx = corners.view(B, -1).topk(N, dim=1)

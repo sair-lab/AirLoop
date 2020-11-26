@@ -33,7 +33,7 @@ def test(net, loader, args=None):
             image = image.to(args.device)
             pose = pose.to(args.device)
             K = K.to(args.device)
-            descriptors, points, scores = net(image)
+            descriptors, points, pointness, scores = net(image)
             matched, _ = match(descriptors, points)
             # evaluation script
             if args.visualize:
