@@ -19,9 +19,11 @@ class LevenbergMarquardt(Optimizer):
         defaults = dict(lr=damping)
         super().__init__(params, defaults)
         assert damping > 0, 'Invalid Damping Factor.'
+        self.loss = 0
 
     @torch.no_grad()
     def step(self, loss, closure=None):
+        self.loss += loss
         L = []
         for group in self.param_groups:
             numels = [p.numel() for p in group['params'] if p.grad is not None]
@@ -38,30 +40,30 @@ class LevenbergMarquardt(Optimizer):
         if closure is not None:
             loss_after_updates = closure()
             if loss_after_updates < loss:
-                self.better = True
                 return loss_after_updates
-            else:
-                self.better = False
-                for group, D in zip(self.param_groups, L): # revert updates
+            else: # revert updates, useful for full batch training.
+                for group, D in zip(self.param_groups, L):
                     [p.add_(d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
                 return loss
-        else:
-            return loss
+        return loss
 
 
 class UpDownDampingScheduler(_LRScheduler):
     '''
-    This scheduler is useful for full batch training, e.g. bundle adjustment.
-    Cannot be used for mini-batches training.
-    Have to call optimizer.step(loss, closure) before scheduler.step()
+    For full batch training, e.g. bundle adjustment,
+        call scheduler.step() after optimizer.step(loss, closure)
+    For mini-batch training, e.g. CNN,
+        call scheduler.step() after multiple optimizer.step(loss)
     '''
     def __init__(self, optimizer, gamma, verbose=False):
         assert gamma > 1, 'Invalid Gamma.'
-        self.gamma, optimizer.better = gamma, False
+        self.gamma, self.loss = gamma, float('Inf')
         super().__init__(optimizer, verbose=verbose, last_epoch=-1)
 
     def get_lr(self):
-        factor = 1/self.gamma if self.optimizer.better else self.gamma
+        factor = 1/self.gamma if self.optimizer.loss < self.loss else self.gamma
+        self.loss = self.optimizer.loss
+        self.optimizer.loss = 0
         return [group['lr']*factor for group in self.optimizer.param_groups]
 
 
@@ -170,15 +172,19 @@ if __name__ == "__main__":
     net = LeNet().to(args.device)
     criterion = nn.CrossEntropyLoss()
     optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping)
-
+    scheduler = UpDownDampingScheduler(optimizer, args.gamma, verbose=True)
     print('Testing LeNet on MNIST..')
     for idx in range(args.epoch):
+        losses = 0
         for batch_idx, (inputs, targets) in enumerate(train_loader):
             inputs, targets = inputs.to(args.device), targets.to(args.device)
             optimizer.zero_grad()
             outputs = net(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
-            optimizer.step(loss, closure)
+            optimizer.step(loss)
+            losses += loss
+        scheduler.step()
         acc = performance(test_loader, net, args.device)
-        print('MNIST acc: %.4f @ %d epoch, Timing: %.3fs'%(acc, idx, timer.end()))
+        print('Train loss: %.7f Test acc: %.4f  @ %d epoch,'
+                 'Timing: %.3fs'%(losses, acc, idx, timer.end()))
