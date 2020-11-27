@@ -1,31 +1,70 @@
 import torch
+import warnings
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import _LRScheduler
 
 
-class LM(Optimizer):
+class LevenbergMarquardt(Optimizer):
     '''
     Levenberg–Marquardt algorithm
     args:
-    df (damping factor): scalar
-
-    (J^T J + df I) * Delta = J^T loss
+    damping: damping factor λ (scalar)
+    (J^T J + λ I) * δ = J^T (y-f(x)) = -J^T loss
+    https://en.wikipedia.org/wiki/Levenberg-Marquardt_algorithm
+    Note: LM optim has no learning rate (lr), but has damping factor.
+    This code re-uses the implementation for lr in PyTorch.
     '''
-    def __init__(self, params, df):
-        defaults = dict(df=df)
+    def __init__(self, params, damping):
+        # inheriting lr mechanism for damping factor
+        defaults = dict(lr=damping)
+        self.loss = 0
         super().__init__(params, defaults)
-        assert df > 0, 'Invalid Damping Factor.'
+        assert damping > 0, 'Invalid Damping Factor.'
 
     @torch.no_grad()
-    def step(self, loss):
+    def step(self, loss, closure=None):
+        self.loss += loss # Saved for DampingScheduler
+        L = []
         for group in self.param_groups:
             numels = [p.numel() for p in group['params'] if p.grad is not None]
             J = torch.cat([p.grad.data.view(1,-1) for p in group['params'] if p.grad is not None],-1)
-            A = (J.T @ J) + group['df'] * torch.eye(J.size(-1)).to(J)
+            A = (J.T @ J) + group['lr'] * torch.eye(J.size(-1)).to(J)
             try: # Faster but sometimes singular error
                 D = J.T.cholesky_solve(A.cholesky()).split(numels)
             except: # Slower but singular is fine
                 D = (A.pinverse() @ J.T).split(numels)
+                warnings.warn("Using pseudo inversion because of singular matrix.", UserWarning)
             [p.add_(-d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
+            L.append(D)
+
+        if closure is not None:
+            loss_after_updates = closure()
+            if loss_after_updates < loss:
+                self.better = True
+                return loss_after_updates
+            else:
+                self.better = False
+                for group, D in zip(self.param_groups, L): # revert updates
+                    [p.add_(d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
+                return loss
+        else:
+            return loss
+
+
+class UpDownDampingScheduler(_LRScheduler):
+    '''
+    This scheduler is useful for full batch training, e.g. bundle adjustment.
+    Cannot be used for mini-batches training.
+    Have to call optimizer.step(loss, closure) before scheduler.step()
+    '''
+    def __init__(self, optimizer, gamma, verbose=False):
+        assert gamma > 1, 'Invalid Gamma.'
+        self.gamma, optimizer.better = gamma, False
+        super().__init__(optimizer, verbose=verbose, last_epoch=-1)
+
+    def get_lr(self):
+        factor = 1/self.gamma if self.optimizer.better else self.gamma
+        return [group['lr']*factor for group in self.optimizer.param_groups]
 
 
 if __name__ == "__main__":
@@ -43,29 +82,60 @@ if __name__ == "__main__":
     parser.add_argument('--device', default='cuda:0', type=str, help='device')
     parser.add_argument('--epoch', default=20, type=int, help='epoch')
     parser.add_argument('--batch-size', default=1000, type=int, help='epoch')
-    parser.add_argument('--df', default=0.1, type=float, help='Damping factor')
+    parser.add_argument('--damping', default=2, type=float, help='Damping factor')
+    parser.add_argument('--gamma', default=2, type=float, help='Gamma')
     args = parser.parse_args()
 
     # Easy Test
     class QuadNet(nn.Module):
         def __init__(self):
             super().__init__()
-            self.w = nn.Parameter(torch.randn(10,10))
+            self.w = nn.Parameter(torch.randn(10, 10))
 
         def forward(self):
-            return (self.w**2).sum()
+            return self.w
 
+
+    print('Testing Quadratic function without Scheduler...')
     net = QuadNet().to(args.device)
-    optimizer = LM(net.parameters(), df=args.df)
-
+    criterion = nn.MSELoss()
+    optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping)
     timer = Timer()
-    print('Testing Quadratic function...')
-    for idx in range(1000):
-        loss = net()
+    for idx in range(50):
+        optimizer.zero_grad()
+        y = net()
+        loss = (y**2).sum()
         loss.backward()
-        optimizer.step(loss)
-        if idx%100 == 0:
-            print('Quad loss %.4f @ %dit, Timing: %.3fs'%(loss, idx, timer.end()))
+        loss = optimizer.step(loss)
+        print('Quad loss %.7f @ %dit, Timing: %.3fs'%(loss, idx, timer.end()), end=' ')
+        print('Using Damping factor', [group['lr'] for group in optimizer.param_groups])
+        if loss < 1e-7:
+            print('Early Stoping!')
+            print('Optimization Early Done with loss:', loss.item())
+            break
+
+
+    print('Quadratic test with UpDownDampingScheduler...')
+    net = QuadNet().to(args.device)
+    criterion = nn.MSELoss()
+    optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping)
+    scheduler = UpDownDampingScheduler(optimizer, args.gamma)
+    timer = Timer()
+    for idx in range(50):
+        optimizer.zero_grad()
+        y = net()
+        closure = lambda: (y**2).sum()
+        loss = closure()
+        loss.backward()
+        loss = optimizer.step(loss, closure)
+        scheduler.step()
+        print('Quad loss %.7f @ %dit, Timing: %.3fs'%(loss, idx, timer.end()), end=' ')
+        print('Using Damping factor', [group['lr'] for group in optimizer.param_groups])
+        if loss < 1e-7:
+            print('Early Stoping with UpDownDampingScheduler!')
+            print('Optimization Done with loss:', loss.item())
+            break
+
 
     # Hard Test
     class LeNet(nn.Module):
@@ -101,7 +171,7 @@ if __name__ == "__main__":
 
     net = LeNet().to(args.device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = LM(net.parameters(), df=args.df)
+    optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping)
 
     print('Testing LeNet on MNIST..')
     for idx in range(args.epoch):
@@ -111,6 +181,6 @@ if __name__ == "__main__":
             outputs = net(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
-            optimizer.step(loss)
+            optimizer.step(loss, closure)
         acc = performance(test_loader, net, args.device)
         print('MNIST acc: %.4f @ %d epoch, Timing: %.3fs'%(acc, idx, timer.end()))
