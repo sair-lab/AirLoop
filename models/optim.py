@@ -17,13 +17,11 @@ class LevenbergMarquardt(Optimizer):
     def __init__(self, params, damping):
         # inheriting lr mechanism for damping factor
         defaults = dict(lr=damping)
-        self.loss = 0
         super().__init__(params, defaults)
         assert damping > 0, 'Invalid Damping Factor.'
 
     @torch.no_grad()
     def step(self, loss, closure=None):
-        self.loss += loss # Saved for DampingScheduler
         L = []
         for group in self.param_groups:
             numels = [p.numel() for p in group['params'] if p.grad is not None]
