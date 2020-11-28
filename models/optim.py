@@ -13,46 +13,33 @@ class LevenbergMarquardt(Optimizer):
     https://en.wikipedia.org/wiki/Levenberg-Marquardt_algorithm
     Note: LM optim has no learning rate (lr), but has damping factor.
     This code re-uses the implementation for lr in PyTorch.
+    To save memory, it is suggested to put parameters into several groups.
+    See the following site for per-parameter options.
+    https://pytorch.org/docs/stable/optim.html
     '''
     def __init__(self, params, damping):
         # inheriting lr mechanism for damping factor
-        defaults = dict(lr=damping)
+        self.loss, defaults = 0, dict(lr=damping)
         super().__init__(params, defaults)
         assert damping > 0, 'Invalid Damping Factor.'
-        self.loss = 0
 
     @torch.no_grad()
     def step(self, loss, closure=None):
         self.loss += loss
-        L = []
         for group in self.param_groups:
             numels = [p.numel() for p in group['params'] if p.grad is not None]
-            J = torch.cat([p.grad.data.view(1,-1) for p in group['params'] if p.grad is not None],-1)
+            J = torch.cat([p.grad.data.view(1,-1) for p in group['params'] if p.grad is not None], -1)
             A = (J.T @ J) + group['lr'] * torch.eye(J.size(-1)).to(J)
-            try: # Faster but sometimes singular error
-                D = J.T.cholesky_solve(A.cholesky()).split(numels)
-            except: # Slower but singular is fine
-                D = (A.pinverse() @ J.T).split(numels)
-                warnings.warn("Using pseudo inversion because of singular matrix.", UserWarning)
+            D = J.T.cholesky_solve(A.cholesky()).split(numels)
             [p.add_(-d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
-            L.append(D)
-
-        if closure is not None:
-            loss_after_updates = closure()
-            if loss_after_updates < loss:
-                return loss_after_updates
-            else: # revert updates, useful for full batch training.
-                for group, D in zip(self.param_groups, L):
-                    [p.add_(d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
-                return loss
-        return loss
 
 
 class UpDownDampingScheduler(_LRScheduler):
     '''
-    For full batch training, e.g. bundle adjustment,
+    UpDownDampingScheduler for LevenbergMarquardt Optimizer
+    For full batch training, e.g., bundle adjustment,
         call scheduler.step() after optimizer.step(loss, closure)
-    For mini-batch training, e.g. CNN,
+    For mini-batch training, e.g., CNN,
         call scheduler.step() after multiple optimizer.step(loss)
     '''
     def __init__(self, optimizer, gamma, verbose=False):
@@ -93,7 +80,7 @@ if __name__ == "__main__":
             self.w = nn.Parameter(torch.randn(10, 10))
 
         def forward(self):
-            return self.w
+            return (self.w**2).sum()
 
 
     print('Testing Quadratic function without Scheduler...')
@@ -104,9 +91,9 @@ if __name__ == "__main__":
     for idx in range(50):
         optimizer.zero_grad()
         y = net()
-        loss = (y**2).sum()
+        loss = y
         loss.backward()
-        loss = optimizer.step(loss)
+        optimizer.step(loss)
         print('Quad loss %.7f @ %dit, Timing: %.3fs'%(loss, idx, timer.end()), end=' ')
         print('Using Damping factor', [group['lr'] for group in optimizer.param_groups])
         if loss < 1e-7:
@@ -124,10 +111,9 @@ if __name__ == "__main__":
     for idx in range(50):
         optimizer.zero_grad()
         y = net()
-        closure = lambda: (y**2).sum()
-        loss = closure()
+        loss = y
         loss.backward()
-        loss = optimizer.step(loss, closure)
+        optimizer.step(loss)
         scheduler.step()
         print('Quad loss %.7f @ %dit, Timing: %.3fs'%(loss, idx, timer.end()), end=' ')
         print('Using Damping factor', [group['lr'] for group in optimizer.param_groups])
@@ -149,6 +135,15 @@ if __name__ == "__main__":
             x = self.conv1(x)
             x = self.conv2(x)
             return self.linear(x)
+
+        def parameters(self):
+            '''
+            To save memory when using LM optimizer
+            Better to manually group parameters according to paramter size.
+            '''
+            return [{'params': list(self.conv1.parameters()) + list(self.conv2.parameters())},
+                    {'params': self.linear.parameters()}]
+
 
     def performance(loader, net, device):
         net.eval()
@@ -186,5 +181,5 @@ if __name__ == "__main__":
             losses += loss
         scheduler.step()
         acc = performance(test_loader, net, args.device)
-        print('Train loss: %.7f Test acc: %.4f  @ %d epoch,'
-                 'Timing: %.3fs'%(losses, acc, idx, timer.end()))
+        print('Train loss: %.7f Test acc: %.4f  @ %d epoch, '
+              'Time: %.3fs'%(losses, acc, idx, timer.end()))
