@@ -47,10 +47,6 @@ class LevenbergMarquardt(Optimizer):
 class UpDownDampingScheduler(_LRScheduler):
     '''
     UpDownDampingScheduler for LevenbergMarquardt Optimizer
-    For full batch training, e.g., bundle adjustment,
-        call scheduler.step() after optimizer.step(loss, closure)
-    For mini-batch training, e.g., CNN,
-        call scheduler.step() after multiple optimizer.step(loss)
     '''
     def __init__(self, optimizer, gamma, verbose=False):
         assert gamma > 1, 'Invalid Gamma.'
