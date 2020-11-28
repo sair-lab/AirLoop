@@ -6,32 +6,36 @@ import numpy as np
 import kornia as kn
 import torch.nn as nn
 from torchvision import models
+import torch.nn.functional as F
 
 class BAGDnet(nn.Module):
     def __init__(self, MPs, KFs, K):
         super().__init__()
         self.K = K
+        self.tKF = KFs[:,1:].view(-1,4,4)
+
         self.tMP = nn.Parameter(MPs[:,1:])
-        self.tKF = nn.Parameter(KFs[:,1:].view(-1,4,4))
+        self.KFXYZ = nn.Parameter(self.tKF[:,:,3])
+
+        KFquats = kn.rotation_matrix_to_quaternion(self.tKF[:,:3,:3].contiguous())
+        self.KFquatlogs = nn.Parameter(kn.quaternion_exp_to_log(KFquats))
 
         # indexing the matches of key frames and Map Point
         self.idxMP = MPs[:,0].type(torch.int)
         self.idxKF = KFs[:,0].type(torch.int)
-
         self.tMPhomo = kn.convert_points_to_homogeneous(self.tMP)
 
     def forward(self, frame_id, point_id):
-        #indexing ## it is the same wiht torch where TODO
         indexKF = torch.where(frame_id==self.idxKF)[1]
         indexMP = torch.where(point_id==self.idxMP)[1]
 
-        # In test set, tKF is the Twc inverse. We may need to store something else in Memory
-        points = (self.tKF[indexKF] @ self.tMPhomo[indexMP].unsqueeze(-1)).squeeze(-1)
+        rots_matrix = kn.quaternion_to_rotation_matrix(kn.quaternion_log_to_exp(self.KFquatlogs))
+        trans_matrix = F.pad(input=rots_matrix, pad=(0,0,0,1), mode='constant', value=0)
+        self.trans_matrix = torch.cat((trans_matrix, self.KFXYZ.unsqueeze(2)), 2)
 
+        points = (self.trans_matrix[indexKF] @ self.tMPhomo[indexMP].unsqueeze(-1)).squeeze(-1)
         Pc = kn.convert_points_from_homogeneous(points)
-
         return kn.project_points(Pc, self.K)
-
 
 class ConsecutiveMatch(nn.Module):
     def __init__(self):
