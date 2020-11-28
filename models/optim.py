@@ -1,3 +1,5 @@
+import sys
+import math
 import torch
 import warnings
 from torch.optim import Optimizer
@@ -9,28 +11,36 @@ class LevenbergMarquardt(Optimizer):
     Levenberg–Marquardt algorithm
     args:
     damping: damping factor λ (scalar)
+    max_block: size of maximum block for matrix inversion
     (J^T J + λ I) * δ = J^T (y-f(x)) = -J^T loss
     https://en.wikipedia.org/wiki/Levenberg-Marquardt_algorithm
     Note: LM optim has no learning rate (lr), but has damping factor.
     This code re-uses the implementation for lr in PyTorch.
-    To save memory, it is suggested to put parameters into several groups.
-    See the following site for per-parameter options.
+    Two options to save memory:
+        1. Put parameters into several groups. (Manually, Suggested)
+            See the code examples in nn.Modules.parameters()
+        2. Set max_block as a large integer. (Automatically)
+            Smaller max_block uses less memory but unstable optimization.
+    For first choice, see the following site for per-parameter options.
     https://pytorch.org/docs/stable/optim.html
     '''
-    def __init__(self, params, damping):
+    def __init__(self, params, damping, max_block=sys.maxsize):
         # inheriting lr mechanism for damping factor
-        self.loss, defaults = 0, dict(lr=damping)
-        super().__init__(params, defaults)
         assert damping > 0, 'Invalid Damping Factor.'
+        self.loss, self.max_block = 0, max_block
+        defaults = dict(lr=damping)
+        super().__init__(params, defaults)
 
     @torch.no_grad()
     def step(self, loss, closure=None):
         self.loss += loss
         for group in self.param_groups:
-            numels = [p.numel() for p in group['params'] if p.grad is not None]
-            J = torch.cat([p.grad.data.view(1,-1) for p in group['params'] if p.grad is not None], -1)
-            A = (J.T @ J) + group['lr'] * torch.eye(J.size(-1)).to(J)
-            D = J.T.cholesky_solve(A.cholesky()).split(numels)
+            numels, D = [p.numel() for p in group['params'] if p.grad is not None], []
+            Js = torch.cat([p.grad.data.view(1,-1) for p in group['params'] if p.grad is not None], -1)
+            for J in Js.split(math.ceil(Js.size(1)/math.ceil(Js.size(1)/self.max_block)), dim=1):
+                A = (J.T @ J) + group['lr'] * torch.eye(J.size(-1)).to(J)
+                D.append(J.T.cholesky_solve(A.cholesky()))
+            D = torch.cat(D).split(numels)
             [p.add_(-d.view(p.shape)*loss) for p,d in zip(group['params'], D) if p.grad is not None]
 
 
@@ -136,7 +146,7 @@ if __name__ == "__main__":
             x = self.conv2(x)
             return self.linear(x)
 
-        def parameters(self):
+        def parameters(self, recurse: bool = True):
             '''
             To save memory when using LM optimizer
             Better to manually group parameters according to paramter size.
@@ -166,7 +176,7 @@ if __name__ == "__main__":
 
     net = LeNet().to(args.device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping)
+    optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping, max_block=2000)
     scheduler = UpDownDampingScheduler(optimizer, args.gamma, verbose=True)
     print('Testing LeNet on MNIST..')
     for idx in range(args.epoch):
