@@ -59,16 +59,19 @@ class ConsecutiveMatch(nn.Module):
 
 if __name__ == "__main__":
     '''Test codes'''
-    import time, math
-    import argparse
-    import torch.optim as optim
+    import time, math, torch, argparse
     from tool import EarlyStopScheduler
+    from optim import LevenbergMarquardt
+    from optim import UpDownDampingScheduler
 
     parser = argparse.ArgumentParser(description='Test BAGD')
     parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
+    parser.add_argument("--optim", type=str, default='SGD', help="LM or SGD")
+    parser.add_argument('--damping', type=float, default=2, help='damping')
+    parser.add_argument("--max-block", type=int, default=1000, help="max block size")
     parser.add_argument('--lr', type=float, default=1e-3, help='Random seed.')
-    parser.add_argument('--min-lr', type=float, default=1e-6, help='Random seed.')
+    parser.add_argument('--min-lr', type=float, default=1e-4, help='Random seed.')
     parser.add_argument("--factor", type=float, default=0.1, help="factor of lr")
     parser.add_argument("--patience", type=int, default=5, help="training patience")
 
@@ -87,8 +90,12 @@ if __name__ == "__main__":
     net = BAGDnet(MPs, KFs, K)
 
     SmoothLoss = nn.SmoothL1Loss(beta = math.sqrt(5.99))
-    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0)
-    scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
+    if args.optim == 'LM':
+        optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping, max_block=args.max_block)
+        scheduler = UpDownDampingScheduler(optimizer, 2, True)
+    elif args.optim == 'SGD':
+        optimizer = torch.optim.SGD(net.parameters(), lr=1e-5)
+        scheduler = EarlyStopScheduler(optimizer, args.factor, args.patience, args.min_lr, True)
 
     pixel = Matches[:,2:4]
     frame_id = Matches[:,0,None].type(torch.int)
@@ -98,8 +105,11 @@ if __name__ == "__main__":
         output = net(frame_id, point_id)
         loss = SmoothLoss(output, pixel)
         loss.backward()
-        optimizer.step()
+        if args.optim == 'LM':
+            optimizer.step(loss)
+            scheduler.step()
+        elif args.optim == 'SGD':
+            optimizer.step()
+            if scheduler.step(loss):
+                break
         print('Epoch: %d, Loss: %.7f'%(i, loss))
-        if scheduler.step(loss):
-            print('Early Stopping!')
-            break
