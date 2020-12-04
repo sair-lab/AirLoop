@@ -91,7 +91,6 @@ if __name__ == "__main__":
 
     print('Testing Quadratic function without Scheduler...')
     net = QuadNet().to(args.device)
-    criterion = nn.MSELoss()
     optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping)
     timer = Timer()
     for idx in range(50):
@@ -110,7 +109,6 @@ if __name__ == "__main__":
 
     print('Quadratic test with UpDownDampingScheduler...')
     net = QuadNet().to(args.device)
-    criterion = nn.MSELoss()
     optimizer = LevenbergMarquardt(net.parameters(), damping=args.damping)
     scheduler = UpDownDampingScheduler(optimizer, args.gamma)
     timer = Timer()
