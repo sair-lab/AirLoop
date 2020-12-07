@@ -47,14 +47,10 @@ class DistinctionLoss(nn.Module):
     def __init__(self):
         super().__init__()
         self.relu = nn.ReLU()
-        self.cosine = nn.CosineSimilarity(dim=-2)
+        self.cosine = PairwiseCosine(inter_batch=False)
 
     def forward(self, descriptors):
-        # batch pairwise cosine
-        x = descriptors.permute((1, 2, 0)).unsqueeze(1)
-        y = descriptors.permute((1, 2, 0))
-        c = self.cosine(x, y)
-        pcos = c.permute((2, 0, 1))
+        pcos = self.cosine(descriptors, descriptors)
         return self.relu(pcos).mean()
 
 
@@ -139,7 +135,7 @@ class DiscriptorMatchLoss(nn.Module):
     def __init__(self, radius=1, debug=False):
         super(DiscriptorMatchLoss, self).__init__()
         self.radius, self.debug = radius, debug
-        self.cosine = nn.CosineSimilarity()
+        self.cosine = PairwiseCosine(inter_batch=True)
 
     def forward(self, descriptors, pts_src, pts_dst, invis_idx, height, width):
         B, N, _ = pts_src.shape
@@ -149,23 +145,26 @@ class DiscriptorMatchLoss(nn.Module):
         pts_src = pts_src.unsqueeze(0).expand_as(pts_dst).reshape(B**2, N, 2)
         pts_dst = pts_dst.reshape_as(pts_src)
 
-        dist = torch.cdist(pts_src, pts_dst)
+        dist = torch.cdist(pts_src, pts_dst).reshape(B, B, N, N)
+        dist[tuple(invis_idx)] = float('nan')
+        pcos = self.cosine(descriptors, descriptors)
 
-        match = dist<=self.radius
-        invis_bs, invis_bd, invis_n = invis_idx
-        match[invis_bs * B + invis_bd, invis_n, :] = 0
-        idx = match.triu(diagonal=1).nonzero(as_tuple=True)
-        src, dst = [idx[0]%B, idx[1]], [idx[0]//B, idx[2]]
-        cosine = self.cosine(descriptors[src], descriptors[dst])
+        match_cos = pcos[(dist <= self.radius).triu(diagonal=1)]
+        _match_cos = pcos[(dist > self.radius).triu(diagonal=1)]
 
-        _match = dist>self.radius
-        _match[invis_bs * B + invis_bd, invis_n, :] = 0
-        _idx = _match.triu(diagonal=1).nonzero(as_tuple=True)
-        _src, _dst = [_idx[0]%B, _idx[1]], [_idx[0]//B, _idx[2]]
-        _cosine = self.cosine(descriptors[_src], descriptors[_dst])
+        return (1 - match_cos.mean()) + _match_cos.mean()
 
-        if self.debug:
-            for b, n, b1, n1 in zip(src[0], src[1], dst[0], dst[1]):
-                print("%d <-> %d, %d <-> %d (2)" % (b, b1, n, n1))
 
-        return (1 - cosine.mean()) + _cosine.mean()
+class PairwiseCosine(nn.Module):
+    def __init__(self, inter_batch=False, dim=-1, eps=1e-8):
+        super(PairwiseCosine, self).__init__()
+        self.inter_batch, self.dim, self.eps = inter_batch, dim, eps
+        self.eqn = 'amd,bnd->abmn' if inter_batch else 'bmd,bnd->bmn'
+
+    def forward(self, x, y):
+        xx = torch.sum(x**2, dim=self.dim).unsqueeze(-1) # (A, M, 1)
+        yy = torch.sum(y**2, dim=self.dim).unsqueeze(-2) # (B, 1, N)
+        if self.inter_batch:
+            xx, yy = xx.unsqueeze(1), yy.unsqueeze(0) # (A, 1, M, 1), (1, B, 1, N)
+        xy = torch.einsum(self.eqn, x, y)
+        return xy / (xx * yy).clamp(min=self.eps**2).sqrt()
