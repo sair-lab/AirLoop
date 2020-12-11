@@ -8,32 +8,45 @@ import torch.nn as nn
 from torchvision import models
 import torch.nn.functional as F
 
+
 class BAGDnet(nn.Module):
+    '''
+    Args:
+        K: stands for the camera intrinsic
+        MPs: the map points in the memory R3. N * 4 the first element is an unique assigned id.
+        KFs: the Translation matrix for the camera pose SE3. N * 1 the first element is an unique assigned id.
+    Parameters:
+        QuatsLog: the log quaternion of the rotation
+        CameraPosition: the position of the camera (x, y, z)
+        Landmarks: the landmarks for observation (x, y, z)
+        Tcw: the transform matrix of the camera pose
+    '''
     def __init__(self, MPs, KFs, K):
         super().__init__()
         self.K = K
-        self.tKF = KFs[:,1:].view(-1,4,4)
+        self.Tcw = KFs[:,1:].view(-1,4,4)
 
-        self.tMP = nn.Parameter(MPs[:,1:])
-        self.KFXYZ = nn.Parameter(self.tKF[:,:,3])
+        self.Landmarks = nn.Parameter(MPs[:,1:])#+torch.randn_like(MPs[:,1:])*0.1)
+        self.CameraPosition = nn.Parameter(self.Tcw[:,:,3][:,:3])
 
-        KFquats = kn.rotation_matrix_to_quaternion(self.tKF[:,:3,:3].contiguous())
-        self.KFquatlogs = nn.Parameter(kn.quaternion_exp_to_log(KFquats))
+        quats = kn.rotation_matrix_to_quaternion(self.Tcw[:,:3,:3].contiguous())
+        self.QuatsLog = nn.Parameter(kn.quaternion_exp_to_log(quats))
 
         # indexing the matches of key frames and Map Point
         self.idxMP = MPs[:,0].type(torch.int)
         self.idxKF = KFs[:,0].type(torch.int)
-        self.tMPhomo = kn.convert_points_to_homogeneous(self.tMP)
+        self.LandmarksHomo = kn.convert_points_to_homogeneous(self.Landmarks)
 
     def forward(self, frame_id, point_id):
         indexKF = torch.where(frame_id==self.idxKF)[1]
         indexMP = torch.where(point_id==self.idxMP)[1]
 
-        rots_matrix = kn.quaternion_to_rotation_matrix(kn.quaternion_log_to_exp(self.KFquatlogs))
+        rots_matrix = kn.quaternion_to_rotation_matrix(kn.quaternion_log_to_exp(self.QuatsLog))
         trans_matrix = F.pad(input=rots_matrix, pad=(0,0,0,1), mode='constant', value=0)
-        self.trans_matrix = torch.cat((trans_matrix, self.KFXYZ.unsqueeze(2)), 2)
+        CameraPositionHomo = kn.convert_points_to_homogeneous(self.CameraPosition)
+        self.trans_matrix = torch.cat((trans_matrix, CameraPositionHomo.unsqueeze(2)), 2)
 
-        points = (self.trans_matrix[indexKF] @ self.tMPhomo[indexMP].unsqueeze(-1)).squeeze(-1)
+        points = (self.trans_matrix[indexKF] @ self.LandmarksHomo[indexMP].unsqueeze(-1)).squeeze(-1)
         Pc = kn.convert_points_from_homogeneous(points)
         return kn.project_points(Pc, self.K)
 
