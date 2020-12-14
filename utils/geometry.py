@@ -22,24 +22,25 @@ class PairwiseProjector(nn.Module):
 
         # TODO don't self-project
 
-        # [T0 T0 ... T1 T1 ...] vs [T0 T1 ... T0 T1 ...]
-        poses_src = poses.repeat_interleave(B, dim=0)
-        poses_dst = poses.repeat(B, 1, 1)
-
         # (B, N)
         depths = F.grid_sample(depths_dense, points[:, None], align_corners=False).squeeze(1).squeeze(1)
 
         # (B, N, 2)
         points_px = G.denormalize_pixel_coordinates(points, H, W)
 
-
         # (B**2, N, 2)
         points_px_dup = self._batch_repeat(points_px)
         # (B**2, N)
         depths_dup = self._batch_repeat(depths)
 
-        cam_src = make_camera(H, W, self.K, poses_src, B**2)
-        cam_dst = make_camera(H, W, self.K, poses_dst, B**2)
+        # [T0 T0 ... T1 T1 ...] vs [T0 T1 ... T0 T1 ...]
+        poses_src = poses.repeat_interleave(B, dim=0)
+        K_src = self.K.repeat_interleave(B, dim=0)
+        poses_dst = poses.repeat(B, 1, 1)
+        K_dst = self.K.repeat(B, 1, 1)
+
+        cam_src = make_camera(H, W, K_src, poses_src)
+        cam_dst = make_camera(H, W, K_dst, poses_dst)
 
         # (B**2, N, 2)
         proj_p, proj_depth = project_points(points_px_dup, depths_dup, cam_src, cam_dst)
@@ -67,12 +68,12 @@ class PairwiseProjector(nn.Module):
         return x[:, None].expand(B, B, *shape).reshape(B**2, *shape)
 
 
-def make_camera(height, width, K, pose, batch_size=1):
+def make_camera(height, width, K, pose):
     """Creates a PinholeCamera with specified info"""
-    intrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)
-    intrinsics[:, 0:3, 0:3] = K.repeat(K.size(0),1,1)
+    intrinsics = torch.eye(4, 4).to(K).repeat(len(K), 1, 1)
+    intrinsics[:, 0:3, 0:3] = K
 
-    extrinsics = torch.eye(4, 4).to(K).repeat(batch_size, 1, 1)
+    extrinsics = torch.eye(4, 4).to(pose).repeat(len(pose), 1, 1)
     extrinsics[:, 0:3, 0:4] = pose
 
     height, width = torch.tensor([height]).to(K), torch.tensor([width]).to(K)
