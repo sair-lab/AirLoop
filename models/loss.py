@@ -35,10 +35,8 @@ class FeatureNetLoss(nn.Module):
             print('Loss: ', distinction, cornerness, match)
             src_idx, dst_idx, pts_idx = invis_idx
             _proj_pts = proj_pts.clone()
-            _proj_pts[src_idx, dst_idx, pts_idx, :] = -2
-            for dbgpts in _proj_pts:
-                self.debug.show(imgs, dbgpts)
-            self.debug.showmatch(imgs[0], points[0], imgs[1], proj_pts[0,1])
+            _proj_pts[src_idx, dst_idx, pts_idx, :] = float('nan')
+            self.debug.showmatch(imgs[0], points[0], imgs[1], _proj_pts[0, 1])
 
         return self.beta[0]*distinction + self.beta[1]*cornerness + self.beta[2]*match
 

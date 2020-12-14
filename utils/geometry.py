@@ -51,7 +51,7 @@ class PairwiseProjector(nn.Module):
             H, W = depths_dense.shape[2:4]
             depths_dense_dup = depths_dense.expand(B, B, H, W).transpose(0, 1).reshape(B**2, 1, H, W)
             depths_dst = F.grid_sample(depths_dense_dup, proj_p[:, None], align_corners=False).squeeze(1).squeeze(1)
-            is_occluded = (proj_depth > depths_dst + self.eps) | (depths_dst > self.max_depth)
+            is_occluded = proj_depth.isnan() | (proj_depth > depths_dst + self.eps) | (depths_dst > self.max_depth)
 
             pair_idx, point_idx = torch.nonzero(is_out_of_bound | is_occluded, as_tuple=True)
 

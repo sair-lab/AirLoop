@@ -77,13 +77,15 @@ def matches(img1, pts1, img2, pts2, colors, circ_radius=3, thickness=1):
 
 def circles(image, points, radius, colors, thickness):
     for pt, c in zip(points, colors):
-        image = cv2.circle(image.copy(), tuple(pt), radius, tuple(c.tolist()), thickness, cv2.LINE_AA)
+        if not torch.any(pt.isnan()):
+            image = cv2.circle(image.copy(), tuple(pt), radius, tuple(c.tolist()), thickness, cv2.LINE_AA)
     return image
 
 
 def lines(image, pts1, pts2, colors, thickness):
     for pt1, pt2, c in zip(pts1, pts2, colors):
-        image = cv2.line(image.copy(), tuple(pt1), tuple(pt2), tuple(c.tolist()), thickness, cv2.LINE_AA)
+        if not torch.any(pt1.isnan() | pt2.isnan()):
+            image = cv2.line(image.copy(), tuple(pt1), tuple(pt2), tuple(c.tolist()), thickness, cv2.LINE_AA)
     return image
 
 
