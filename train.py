@@ -5,6 +5,7 @@ import sys
 import tqdm
 import copy
 import torch
+import random
 import warnings
 import argparse
 import numpy as np
@@ -107,13 +108,11 @@ if __name__ == "__main__":
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
 
-    resize = [round(480*args.scale), round(640*args.scale)]
-    image_transform = T.Compose([T.Resize(resize), lambda x: np.array(x), T.ToTensor()])
-    depth_transform = T.Compose([T.ToPILImage(mode='F'), image_transform])
-
-    train_data = TartanAir(args.data_root, args.scale, image_transform, depth_transform)
-    test_data = TartanAirTest(args.test_root, args.scale, image_transform)
+    train_data = TartanAir(args.data_root, args.scale)
+    test_data = TartanAirTest(args.test_root, args.scale)
 
     train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)
     test_sampler = AirSampler(test_data, args.batch_size, shuffle=False)
