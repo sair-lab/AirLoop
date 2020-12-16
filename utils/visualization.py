@@ -24,7 +24,7 @@ class Visualization():
             images = get_colors(color, images.squeeze(-1), vmin, vmax)
 
         if points is not None:
-            points = C.denormalize_pixel_coordinates(points, h, w)
+            points = C.denormalize_pixel_coordinates(points, h, w).to(torch.int)
             for i, pts in enumerate(points):
                 colors = get_colors(color, [0]*len(pts) if values is None else values[i], vmin, vmax)
                 images[i] = circles(images[i], pts, self.radius, colors, self.thickness)
@@ -41,8 +41,8 @@ class Visualization():
     def showmatch(self, img1, pts1, img2, pts2, color='blue', values=None, vmin=None, vmax=None):
         assert len(pts1) == len(pts2)
         h, w = img1.size(-2), img1.size(-1)
-        pts1 = C.denormalize_pixel_coordinates(pts1, h, w)
-        pts2 = C.denormalize_pixel_coordinates(pts2, h, w)
+        pts1 = C.denormalize_pixel_coordinates(pts1, h, w).to(torch.int)
+        pts2 = C.denormalize_pixel_coordinates(pts2, h, w).to(torch.int)
         img1, img2 = torch2cv(torch.stack([img1, img2]))
         colors = get_colors(color, [0]*len(pts1) if values is None else values, vmin, vmax)
         image = matches(img1, pts1, img2, pts2, colors)

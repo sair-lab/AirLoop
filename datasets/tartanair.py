@@ -29,7 +29,7 @@ class TartanAir(Dataset):
             self.sizes.append(len(self.image[seq]))
 
         self.img_size = (np.array([480, 640]) * scale).round().astype(np.int32)
-        self.resize_totensor = T.Compose([T.Resize(self.img_size), lambda x: np.array(x), T.ToTensor()])
+        self.resize_totensor = T.Compose([T.Resize(self.img_size.tolist()), lambda x: np.array(x), T.ToTensor()])
 
         # camera intrinsics
         fx, fy, cx, cy = 320, 320, 320, 240
