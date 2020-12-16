@@ -11,20 +11,25 @@ class Memory(nn.Module):
         super().__init__()
         self.points = nn.Parameter(torch.FloatTensor(N, 3).fill_(1e7))
         self.register_buffer('descriptors', torch.zeros(N, F))
-        self.register_buffer('usage',  torch.LongTensor(N).zero_())
+        self.register_buffer('usage',  torch.zeros(N, dtype=torch.int32))
+        self.register_buffer('idx',  torch.arange(N))
         self.cosine = PairwiseCosine() 
 
     def write(self, points, descriptors):
         idx, momentum = self.point_address(points)
         self.usage[idx] += 1
-        self.points[idx].data = self.moving(self.points[idx], momentum)
-        self.descriptors[idx] = self.moving(self.descriptors[idx], momentum)
+        newpoints = self.points.clone()
+        newpoints[idx] = self.moving(self.points[idx], points, momentum)
+        self.points.data.copy_(newpoints)
+        self.descriptors[idx] = self.moving(self.descriptors[idx], descriptors, momentum)
+        return self.descriptors[idx]
 
     def read(self, descriptors):
-        idx, momentum = self.address(descriptors)
-    
-    def moving(self, x, momentum):
-        return x * momentum + (1 - momentum) * x
+        cosine, idx = self.address(descriptors)
+        return cosine, self.descriptors[idx]
+
+    def moving(self, x, y, momentum):
+        return x * momentum + (1 - momentum) * y
 
     def point_address(self, points):
         dist, idx = torch.cdist(points, self.points, p=2).min(dim=-1)
@@ -35,8 +40,9 @@ class Memory(nn.Module):
         return idx, momentum.unsqueeze(-1)
 
     def address(self, descriptors):
-        cosine, idx = self.cosine(descriptors, self.descriptors).max(dim=-1)
-        return cosine, idx
+        mask = self.usage > 0
+        cosine, idx = self.cosine(descriptors, self.descriptors[mask]).max(dim=-1)
+        return cosine, self.idx[mask][idx]
 
 
 class PairwiseCosine(nn.Module):
@@ -69,5 +75,5 @@ if __name__ == "__main__":
     descriptors = torch.randn(N, F).to(args.device)
     for i in range(100):
         memory.write(points, descriptors)
-        memory.read(descriptors)
+        cosine, descriptor = memory.read(descriptors)
         timer.toc()
