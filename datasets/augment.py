@@ -34,9 +34,7 @@ class AirAugment(nn.Module):
 
     def forward(self, image, K, depth=None):
         in_size = np.array(image.size[::-1])
-        center = in_size / 2
-        scale = self.img_size / in_size
-        angle = 0
+        center, scale, angle = in_size/2, self.img_size/in_size, 0
 
         transform = np.random.choice(np.arange(4), p=[0.25]*4)
         if transform == 1:
@@ -44,30 +42,24 @@ class AirAugment(nn.Module):
             i, j, h, w = T.RandomResizedCrop.get_params(image, trans.scale, trans.ratio)
             center = np.array([i + h / 2, j + w / 2])
             scale = self.img_size / np.array([h, w])
-
             image = F.resized_crop(image, i, j, h, w, trans.size, trans.interpolation)
-            if depth is not None:
-                depth = F.resized_crop(depth, i, j, h, w, trans.size, trans.interpolation)
+            depth = depth if depth is None else F.resized_crop(depth, i, j, h, w, trans.size, trans.interpolation)
+
         elif transform == 2:
             trans = self.rand_rotate
             angle = T.RandomRotation.get_params(trans.degrees)
-
             # fill oob pix with reflection so that model can't detect rotation with boundary
             image = F.pad(image, padding=tuple(in_size // 2), padding_mode='reflect')
             image = F.rotate(image, angle, trans.resample, trans.expand, trans.center, trans.fill)
             image = F.center_crop(image, tuple(in_size))
             # fill oob depth with inf so that projector can mask them out
-            if depth is not None:
-                depth = F.rotate(depth, angle, trans.resample, trans.expand, trans.center, float('inf'))
+            depth = depth if depth is None else F.rotate(depth, angle, trans.resample, trans.expand, trans.center, float('inf'))
+
         elif transform == 3:
             image = self.rand_color(image)
 
-        translation = self.img_size / 2 - center
-
         image = self.resize_totensor(image)
+        translation = self.img_size / 2 - center
         K = self.apply_affine(K, translation, center, scale, angle)
 
-        if depth is not None:
-            return image, K, self.resize_totensor(depth)
-        else:
-            return image, K
+        return (image, K) if depth is None else (image, K, self.resize_totensor(depth))

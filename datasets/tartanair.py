@@ -13,7 +13,7 @@ from torchvision import transforms as T
 from scipy.spatial.transform import Rotation as R
 from torchvision.transforms import functional as F
 
-from augment import AirAugment
+from .augment import AirAugment
 
 
 class TartanAir(Dataset):
