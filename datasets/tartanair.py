@@ -13,10 +13,13 @@ from torchvision import transforms as T
 from scipy.spatial.transform import Rotation as R
 from torchvision.transforms import functional as F
 
+from .augment import AirAugment
+
 
 class TartanAir(Dataset):
     def __init__(self, root, scale=1, augment=True):
         super().__init__()
+        self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
         self.sequences = glob.glob(os.path.join(root,'*','Easy','*'))
         self.image, self.depth, self.poses, self.sizes = {}, {}, {}, []
         ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
@@ -28,84 +31,26 @@ class TartanAir(Dataset):
             assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
             self.sizes.append(len(self.image[seq]))
 
-        self.img_size = (np.array([480, 640]) * scale).round().astype(np.int32)
-        self.resize_totensor = T.Compose([T.Resize(self.img_size.tolist()), lambda x: np.array(x), T.ToTensor()])
-
-        # camera intrinsics
+        # Camera Intrinsics of TartanAir Dataset
         fx, fy, cx, cy = 320, 320, 320, 240
-        self.K_orig = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
-
-        # augmentations
-        self.augment = augment
-        self.rand_crop = T.RandomResizedCrop(self.img_size.tolist(), scale=(0.1, 1.0))
-        self.rand_rotate = T.RandomRotation(45, resample=Image.BILINEAR)
-        self.rand_color = T.ColorJitter(0.8, 0.8, 0.8)
-
-    def apply_affine(self, K, translation=[0, 0], center=[0, 0], scale=[1, 1], angle=0):
-        """Applies transformation to K in the order: (R, S), T. All coordinates are in (h, w) order.
-           Center is for both scale and rotation.
-        """
-        translation = torch.tensor(translation[::-1].copy(), dtype=torch.float32)
-        center = torch.tensor(center[::-1].copy(), dtype=torch.float32)
-        scale = torch.tensor(scale[::-1].copy(), dtype=torch.float32)
-        angle = torch.tensor([angle], dtype=torch.float32)
-
-        scaled_rotation = torch.block_diag(kn.angle_to_rotation_matrix(angle)[0] @ torch.diag(scale), torch.ones(1))
-        scaled_rotation[:2, 2] = center - scaled_rotation[:2, :2] @ center + translation
-
-        return scaled_rotation @ K
-
-    def joint_transform(self, image, depth, K, p=[0.25]*4):
-        in_size = np.array(image.size[::-1])
-        center = in_size / 2
-        scale = self.img_size / in_size
-        angle = 0
-
-        if not self.augment:
-            p = [1]
-
-        transform = np.random.choice(np.arange(len(p)), p=p)
-        if transform == 1:
-            trans = self.rand_crop
-            i, j, h, w = T.RandomResizedCrop.get_params(image, trans.scale, trans.ratio)
-            center = np.array([i + h / 2, j + w / 2])
-            scale = self.img_size / np.array([h, w])
-
-            image = F.resized_crop(image, i, j, h, w, trans.size, trans.interpolation)
-            depth = F.resized_crop(depth, i, j, h, w, trans.size, trans.interpolation)
-        elif transform == 2:
-            trans = self.rand_rotate
-            angle = T.RandomRotation.get_params(trans.degrees)
-
-            # fill oob pix with reflection so that model can't detect rotation with boundary
-            image = F.pad(image, padding=tuple(in_size // 2), padding_mode='reflect')
-            image = F.rotate(image, angle, trans.resample, trans.expand, trans.center, trans.fill)
-            image = F.center_crop(image, tuple(in_size))
-            # fill oob depth with inf so that projector can mask them out
-            depth = F.rotate(depth, angle, trans.resample, trans.expand, trans.center, float('inf'))
-        elif transform == 3:
-            image = self.rand_color(image)
-
-        translation = self.img_size / 2 - center
-
-        return (self.resize_totensor(image), self.resize_totensor(depth),
-                self.apply_affine(K, translation, center, scale, angle))
+        self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
 
     def __len__(self):
         return sum(self.sizes)
 
     def __getitem__(self, ret):
         i, frame = ret
-        seq = self.sequences[i]
+        seq, K = self.sequences[i], self.K
         image = Image.open(self.image[seq][frame])
         depth = F.to_pil_image(np.load(self.depth[seq][frame]), mode='F')
         pose = self.poses[seq][frame]
-        image, depth, K = self.joint_transform(image, depth, self.K_orig)
+        if self.augment is not False:
+            image, K, depth = self.augment(image, self.K, depth)
         return image, depth, pose, K
 
 
 class TartanAirTest(TartanAir):
-    def __init__(self, root, scale=1, augment=False):
+    def __init__(self, root, scale=1, augment=True):
         super().__init__(root, scale, augment)
         self.sequences = sorted(glob.glob(os.path.join(root,'mono','*')))
         self.pose_file = sorted(glob.glob(os.path.join(root,'mono_gt','*.txt')))
@@ -124,11 +69,12 @@ class TartanAirTest(TartanAir):
 
     def __getitem__(self, ret):
         i, frame = ret
-        seq = self.sequences[i]
+        seq, K = self.sequences[i], self.K
         image = Image.open(self.image[seq][frame])
         pose = self.poses[seq][frame]
-        image, depth, K = self.joint_transform(image, depth, self.K_orig)
-        return image, depth, pose, K
+        if self.augment is not False:
+            image, K = self.augment(image, self.K)
+        return image, pose, K
 
 
 class AirSampler(Sampler):
