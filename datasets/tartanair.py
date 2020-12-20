@@ -50,7 +50,7 @@ class TartanAir(Dataset):
 
 
 class TartanAirTest(TartanAir):
-    def __init__(self, root, scale=1, augment=True):
+    def __init__(self, root, scale=1, augment=False):
         super().__init__(root, scale, augment)
         self.sequences = sorted(glob.glob(os.path.join(root,'mono','*')))
         self.pose_file = sorted(glob.glob(os.path.join(root,'mono_gt','*.txt')))

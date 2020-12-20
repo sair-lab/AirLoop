@@ -15,22 +15,24 @@ class Memory(nn.Module):
         self.register_buffer('idx',  torch.arange(N))
         self.cosine = PairwiseCosine() 
 
+    @torch.no_grad()
     def write(self, points, descriptors):
         idx, momentum = self.point_address(points)
         self.usage[idx] += 1
-        newpoints = self.points.clone()
-        newpoints[idx] = self.moving(self.points[idx], points, momentum)
-        self.points.data.copy_(newpoints)
+        self.points[idx] = self.moving(self.points[idx], points, momentum)
         self.descriptors[idx] = self.moving(self.descriptors[idx], descriptors, momentum)
         return self.descriptors[idx]
 
+    @torch.no_grad()
     def read(self, descriptors):
         cosine, idx = self.address(descriptors)
         return cosine, self.descriptors[idx]
 
+    @torch.no_grad()
     def moving(self, x, y, momentum):
         return x * momentum + (1 - momentum) * y
 
+    @torch.no_grad()
     def point_address(self, points):
         dist, idx = torch.cdist(points, self.points, p=2).min(dim=-1)
         mask = dist > self.eps
@@ -39,6 +41,7 @@ class Memory(nn.Module):
         momentum[mask == 0] = self.momentum
         return idx, momentum.unsqueeze(-1)
 
+    @torch.no_grad()
     def address(self, descriptors):
         mask = self.usage > 0
         cosine, idx = self.cosine(descriptors, self.descriptors[mask]).max(dim=-1)
