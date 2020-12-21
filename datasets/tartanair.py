@@ -20,7 +20,7 @@ class TartanAir(Dataset):
     def __init__(self, root, scale=1, augment=True):
         super().__init__()
         self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
-        self.sequences = glob.glob(os.path.join(root,'*','Easy','*'))
+        self.sequences = glob.glob(os.path.join(root,'*','[EH]a[sr][yd]','*'))
         self.image, self.depth, self.poses, self.sizes = {}, {}, {}, []
         ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
         for seq in self.sequences:
