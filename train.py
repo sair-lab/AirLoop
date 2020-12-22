@@ -65,6 +65,7 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
         train_loss.popleft()
         train_loss.append(loss.item())
         if np.isnan(loss.item()):
+            train_loss[-1] = np.mean(list(train_loss)[:-1])
             print('Warning: loss is nan during iteration %d.' % idx)
         enumerater.set_description("Loss: %.4f on %d/%d"%(sum(train_loss)/(loss_ave), idx+1, batches))
         if idx > args.visualize:
