@@ -29,7 +29,7 @@ class FeatureNetLoss(nn.Module):
         distinction = self.distinction(descriptors)
         cornerness = self.score_loss(pointness, imgs, batch_project)
         proj_pts, invis_idx = batch_project(points)
-        match = self.match(descriptors, points, proj_pts, invis_idx, H, W)
+        match = self.match(descriptors, points.unsqueeze(0), proj_pts, invis_idx, H, W)
 
         if self.debug is not False:
             print('Loss: ', distinction, cornerness, match)
@@ -136,14 +136,10 @@ class DiscriptorMatchLoss(nn.Module):
         self.cosine = PairwiseCosine(inter_batch=True)
 
     def forward(self, descriptors, pts_src, pts_dst, invis_idx, height, width):
-        B, N, _ = pts_src.shape
-
         pts_src = C.denormalize_pixel_coordinates(pts_src.detach(), height, width)
         pts_dst = C.denormalize_pixel_coordinates(pts_dst.detach(), height, width)
-        pts_src = pts_src.unsqueeze(0).expand_as(pts_dst).reshape(B**2, N, 2)
-        pts_dst = pts_dst.reshape_as(pts_src)
 
-        dist = torch.cdist(pts_src, pts_dst).reshape(B, B, N, N)
+        dist = torch.cdist(pts_dst, pts_src)
         dist[tuple(invis_idx)] = float('nan')
         pcos = self.cosine(descriptors, descriptors)
 

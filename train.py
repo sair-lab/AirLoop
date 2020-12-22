@@ -100,7 +100,7 @@ if __name__ == "__main__":
     parser.add_argument("--momentum", type=float, default=0.9, help="momentum of optim")
     parser.add_argument("--w-decay", type=float, default=0, help="weight decay of optim")
     parser.add_argument("--epoch", type=int, default=15, help="number of epoches")
-    parser.add_argument("--batch-size", type=int, default=4, help="minibatch size")
+    parser.add_argument("--batch-size", type=int, default=8, help="minibatch size")
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--num-workers", type=int, default=4, help="workers of dataloader")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
