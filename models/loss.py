@@ -12,9 +12,9 @@ from models.featurenet import GridSample
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 0.5, 1], K=None, debug=False):
+    def __init__(self, beta=[1, 0.5, 1], K=None, debug=False, writer=None):
         super().__init__()
-        self.beta = beta
+        self.writer, self.beta, self.n_iter = writer, beta, 0
         self.distinction = DistinctionLoss()
         self.projector = PairwiseProjector(K)
         self.score_loss = ScoreLoss(debug=debug)
@@ -26,10 +26,18 @@ class FeatureNetLoss(nn.Module):
             return self.projector(pts, depths_dense, poses, K)
 
         H, W = pointness.size(2), pointness.size(3)
-        distinction = self.distinction(descriptors)
-        cornerness = self.score_loss(pointness, imgs, batch_project)
+        distinction = self.beta[0] * self.distinction(descriptors)
+        cornerness = self.beta[1] * self.score_loss(pointness, imgs, batch_project)
         proj_pts, invis_idx = batch_project(points)
-        match = self.match(descriptors, points.unsqueeze(0), proj_pts, invis_idx, H, W)
+        match = self.beta[2] * self.match(descriptors, points.unsqueeze(0), proj_pts, invis_idx, H, W)
+        loss = distinction + cornerness + match
+
+        if self.writer is not None:
+            self.n_iter = self.n_iter + 1
+            self.writer.add_scalars('Loss', {'distinction': distinction,
+                                             'cornerness': cornerness,
+                                             'match': match,
+                                             'all': loss}, self.n_iter)
 
         if self.debug is not False:
             print('Loss: ', distinction, cornerness, match)
@@ -38,7 +46,7 @@ class FeatureNetLoss(nn.Module):
             _proj_pts[src_idx, dst_idx, pts_idx, :] = float('nan')
             self.debug.showmatch(imgs[0], points[0], imgs[1], _proj_pts[0, 1])
 
-        return self.beta[0]*distinction + self.beta[1]*cornerness + self.beta[2]*match
+        return loss
 
 
 class DistinctionLoss(nn.Module):

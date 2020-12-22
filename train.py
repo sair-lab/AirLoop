@@ -23,6 +23,7 @@ from models import ConsecutiveMatch
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
 from datasets import TartanAir, TartanAirTest
+from torch.utils.tensorboard import SummaryWriter
 
 
 def test(net, loader, args=None):
@@ -89,6 +90,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
     parser.add_argument("--data-root", type=str, default='/data/datasets/tartanair', help="data location")
     parser.add_argument("--test-root", type=str, default='/data/datasets/tartanair_test')
+    parser.add_argument("--log-dir", type=str, default=None, help="log dir")
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
@@ -121,7 +123,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_data, batch_sampler=train_sampler, pin_memory=True, num_workers=args.num_workers)
     test_loader = DataLoader(test_data, batch_sampler=test_sampler, pin_memory=True, num_workers=args.num_workers)
 
-    criterion = FeatureNetLoss(debug=args.debug)
+    criterion = FeatureNetLoss(debug=args.debug, writer=SummaryWriter(args.log_dir))
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
