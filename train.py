@@ -125,7 +125,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_data, batch_sampler=train_sampler, pin_memory=True, num_workers=args.num_workers)
     test_loader = DataLoader(test_data, batch_sampler=test_sampler, pin_memory=True, num_workers=args.num_workers)
 
-    criterion = FeatureNetLoss(debug=args.debug, writer=SummaryWriter(args.log_dir))
+    criterion = FeatureNetLoss(debug=args.debug, writer=SummaryWriter(args.log_dir) if args.log_dir else None)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)

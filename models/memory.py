@@ -52,6 +52,7 @@ class PairwiseCosine(nn.Module):
     def __init__(self, dim=-1, eps=1e-7):
         super().__init__()
         self.dim, self.eps = dim, eps
+        self.eqn = 'md,nd->mn'
 
     def forward(self, x, y):
         xx = x.norm(dim=self.dim).unsqueeze(-1)

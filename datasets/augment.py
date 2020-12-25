@@ -13,7 +13,7 @@ class AirAugment(nn.Module):
     def __init__(self, scale=1, size=[480, 640]):
         super().__init__()
         self.img_size = (np.array(size) * scale).round().astype(np.int32)
-        self.resize_totensor = T.Compose([T.Resize(self.img_size.tolist()), lambda x: np.array(x), T.ToTensor()])
+        self.resize_totensor = T.Compose([T.Resize(self.img_size.tolist()), np.array, T.ToTensor()])
         self.rand_crop = T.RandomResizedCrop(self.img_size.tolist(), scale=(0.1, 1.0))
         self.rand_rotate = T.RandomRotation(45, resample=Image.BILINEAR)
         self.rand_color = T.ColorJitter(0.8, 0.8, 0.8)
