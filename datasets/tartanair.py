@@ -20,17 +20,20 @@ class TartanAir(Dataset):
     def __init__(self, root, scale=1, augment=True):
         super().__init__()
         self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
-        self.sequences = glob.glob(os.path.join(root,'*','[EH]a[sr][yd]','*'))
-        self.image, self.depth, self.poses, self.sizes = {}, {}, {}, []
-        ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
-        for seq in self.sequences:
-            quaternion = np.loadtxt(path.join(seq, 'pose_left.txt'), dtype=np.float32)
-            self.poses[seq] = ned2den @ pose2mat(quaternion)
-            self.image[seq] = sorted(glob.glob(path.join(seq,'image_left','*.png')))
-            self.depth[seq] = sorted(glob.glob(path.join(seq,'depth_left','*.npy')))
-            assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
-            self.sizes.append(len(self.image[seq]))
-
+        processed = os.path.join(root, 'processed-sequences.pt')
+        if not os.path.exists(processed):
+            self.sequences = glob.glob(os.path.join(root,'*','[EH]a[sr][yd]','*'))
+            self.image, self.depth, self.poses, self.sizes = {}, {}, {}, []
+            ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+            for seq in self.sequences:
+                quaternion = np.loadtxt(path.join(seq, 'pose_left.txt'), dtype=np.float32)
+                self.poses[seq] = ned2den @ pose2mat(quaternion)
+                self.image[seq] = sorted(glob.glob(path.join(seq,'image_left','*.png')))
+                self.depth[seq] = sorted(glob.glob(path.join(seq,'depth_left','*.npy')))
+                assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
+                self.sizes.append(len(self.image[seq]))
+            torch.save((self.sequences, self.image, self.depth, self.poses, self.sizes), processed)
+        self.sequences, self.image, self.depth, self.poses, self.sizes = torch.load(processed)
         # Camera Intrinsics of TartanAir Dataset
         fx, fy, cx, cy = 320, 320, 320, 240
         self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
@@ -49,20 +52,27 @@ class TartanAir(Dataset):
         return image, depth, pose, K
 
 
-class TartanAirTest(TartanAir):
+class TartanAirTest(Dataset):
     def __init__(self, root, scale=1, augment=False):
-        super().__init__(root, scale, augment)
-        self.sequences = sorted(glob.glob(os.path.join(root,'mono','*')))
-        self.pose_file = sorted(glob.glob(os.path.join(root,'mono_gt','*.txt')))
-
-        self.image, self.poses, self.sizes = {}, {}, []
-        ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
-        for seq, pose in zip(self.sequences, self.pose_file):
-            quaternion = np.loadtxt(pose, dtype=np.float32)
-            self.poses[seq] = ned2den @ pose2mat(quaternion)
-            self.image[seq] = sorted(glob.glob(path.join(seq, '*.png')))
-            assert(len(self.image[seq])==self.poses[seq].shape[0])
-            self.sizes.append(len(self.image[seq]))
+        super().__init__()
+        self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
+        processed = os.path.join(root, 'processed-sequences.pt')
+        if not os.path.exists(processed):
+            self.sequences = sorted(glob.glob(os.path.join(root,'mono','*')))
+            self.pose_file = sorted(glob.glob(os.path.join(root,'mono_gt','*.txt')))
+            self.image, self.poses, self.sizes = {}, {}, []
+            ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+            for seq, pose in zip(self.sequences, self.pose_file):
+                quaternion = np.loadtxt(pose, dtype=np.float32)
+                self.poses[seq] = ned2den @ pose2mat(quaternion)
+                self.image[seq] = sorted(glob.glob(path.join(seq, '*.png')))
+                assert(len(self.image[seq])==self.poses[seq].shape[0])
+                self.sizes.append(len(self.image[seq]))
+            torch.save((self.sequences, self.image, self.poses, self.sizes), processed)
+        self.sequences, self.image, self.poses, self.sizes = torch.load(processed)
+        # Camera Intrinsics of TartanAir Dataset
+        fx, fy, cx, cy = 320, 320, 320, 240
+        self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
 
     def __len__(self):
         return sum(self.sizes)
