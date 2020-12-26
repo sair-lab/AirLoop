@@ -2,4 +2,4 @@
 
 from .visualization import Visualization
 
-from .geometry import PairwiseProjector
+from .geometry import Projector

@@ -6,7 +6,7 @@ import torch.nn as nn
 import kornia.feature as kf
 import torch.nn.functional as F
 from utils import Visualization
-from utils import PairwiseProjector
+from utils import Projector
 import kornia.geometry.conversions as C
 from models.featurenet import GridSample
 
@@ -16,14 +16,14 @@ class FeatureNetLoss(nn.Module):
         super().__init__()
         self.writer, self.beta, self.n_iter = writer, beta, 0
         self.distinction = DistinctionLoss()
-        self.projector = PairwiseProjector(K)
+        self.projector = Projector()
         self.score_loss = ScoreLoss(debug=debug)
         self.match = DiscriptorMatchLoss(debug=debug)
         self.debug = Visualization('loss') if debug else debug
 
     def forward(self, descriptors, points, pointness, depths_dense, poses, K, imgs):
         def batch_project(pts):
-            return self.projector(pts, depths_dense, poses, K)
+            return self.projector.cartesian(pts, depths_dense, poses, K)
 
         H, W = pointness.size(2), pointness.size(3)
         distinction = self.beta[0] * self.distinction(descriptors)
