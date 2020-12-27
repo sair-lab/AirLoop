@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import os
+import bz2
 import glob
 import torch
+import pickle
 import numpy as np
 import kornia as kn
 from os import path
@@ -17,11 +19,13 @@ from .augment import AirAugment
 
 
 class TartanAir(Dataset):
-    def __init__(self, root, scale=1, augment=True):
+    def __init__(self, root, scale=1, augment=True, catalog_path=None):
         super().__init__()
         self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
-        processed = os.path.join(root, 'processed-sequences.pt')
-        if not os.path.exists(processed):
+        if catalog_path is not None and os.path.exists(catalog_path):
+            with bz2.BZ2File(catalog_path, 'rb') as f:
+                self.sequences, self.image, self.depth, self.poses, self.sizes = pickle.load(f)
+        else:
             self.sequences = glob.glob(os.path.join(root,'*','[EH]a[sr][yd]','*'))
             self.image, self.depth, self.poses, self.sizes = {}, {}, {}, []
             ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
@@ -32,8 +36,9 @@ class TartanAir(Dataset):
                 self.depth[seq] = sorted(glob.glob(path.join(seq,'depth_left','*.npy')))
                 assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
                 self.sizes.append(len(self.image[seq]))
-            torch.save((self.sequences, self.image, self.depth, self.poses, self.sizes), processed)
-        self.sequences, self.image, self.depth, self.poses, self.sizes = torch.load(processed)
+            os.makedirs(os.path.dirname(catalog_path), exist_ok=True)
+            with bz2.BZ2File(catalog_path, 'wb') as f:
+                pickle.dump((self.sequences, self.image, self.depth, self.poses, self.sizes), f)
         # Camera Intrinsics of TartanAir Dataset
         fx, fy, cx, cy = 320, 320, 320, 240
         self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
@@ -53,11 +58,13 @@ class TartanAir(Dataset):
 
 
 class TartanAirTest(Dataset):
-    def __init__(self, root, scale=1, augment=False):
+    def __init__(self, root, scale=1, augment=False, catalog_path=None):
         super().__init__()
         self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
-        processed = os.path.join(root, 'processed-sequences.pt')
-        if not os.path.exists(processed):
+        if catalog_path is not None and os.path.exists(catalog_path):
+            with bz2.BZ2File(catalog_path, 'rb') as f:
+                self.sequences, self.image, self.poses, self.sizes = pickle.load(f)
+        else:
             self.sequences = sorted(glob.glob(os.path.join(root,'mono','*')))
             self.pose_file = sorted(glob.glob(os.path.join(root,'mono_gt','*.txt')))
             self.image, self.poses, self.sizes = {}, {}, []
@@ -68,8 +75,9 @@ class TartanAirTest(Dataset):
                 self.image[seq] = sorted(glob.glob(path.join(seq, '*.png')))
                 assert(len(self.image[seq])==self.poses[seq].shape[0])
                 self.sizes.append(len(self.image[seq]))
-            torch.save((self.sequences, self.image, self.poses, self.sizes), processed)
-        self.sequences, self.image, self.poses, self.sizes = torch.load(processed)
+            os.makedirs(os.path.dirname(catalog_path), exist_ok=True)
+            with bz2.BZ2File(catalog_path, 'wb') as f:
+                pickle.dump((self.sequences, self.image, self.poses, self.sizes), f)
         # Camera Intrinsics of TartanAir Dataset
         fx, fy, cx, cy = 320, 320, 320, 240
         self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
@@ -92,9 +100,6 @@ class AirSampler(Sampler):
         self.data_sizes = data.sizes
         self.bs = batch_size
         self.shuffle = shuffle
-        self.__iter__()
-
-    def __iter__(self):
         batches = []
         for i, size in enumerate(self.data_sizes):
             num = size - self.bs + 1
@@ -102,6 +107,8 @@ class AirSampler(Sampler):
             batches += [list(zip([i]*self.bs, range(L[n], L[n]+self.bs))) for n in range(num)]
         L = torch.randperm(len(batches))
         self.batches = [batches[L[n]] for n in range(len(batches))] if self.shuffle else batches
+
+    def __iter__(self):
         return iter(self.batches)
 
     def __len__(self):

@@ -88,8 +88,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Feature Graph Networks')
     parser.add_argument("--device", type=str, default='cuda:0', help="cuda or cpu")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
-    parser.add_argument("--data-root", type=str, default='/data/datasets/tartanair', help="data location")
+    parser.add_argument("--train-root", type=str, default='/data/datasets/tartanair', help="data location")
     parser.add_argument("--test-root", type=str, default='/data/datasets/tartanair_test')
+    parser.add_argument("--train-catalog", type=str, default='./.cache/tartanair-sequences.pbz2', help='processed training set')
+    parser.add_argument("--test-catalog", type=str, default='./.cache/tartanair-test-sequences.pbz2', help='processed test set')
     parser.add_argument("--log-dir", type=str, default=None, help="log dir")
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
@@ -114,8 +116,8 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    train_data = TartanAir(args.data_root, args.scale)
-    test_data = TartanAirTest(args.test_root, args.scale)
+    train_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog)
+    test_data = TartanAirTest(args.test_root, args.scale, catalog_path=args.test_catalog)
 
     train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)
     test_sampler = AirSampler(test_data, args.batch_size, shuffle=False)
