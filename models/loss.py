@@ -8,35 +8,40 @@ import torch.nn.functional as F
 from utils import Visualization
 from utils import Projector
 import kornia.geometry.conversions as C
+
+from models.memory import Memory
 from models.featurenet import GridSample
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 0.5, 1], K=None, debug=False, writer=None):
+    def __init__(self, beta=[1, 1, 1, 1], K=None, debug=False, writer=None):
         super().__init__()
         self.writer, self.beta, self.n_iter = writer, beta, 0
-        self.distinction = DistinctionLoss()
+        self.score_corner = ScoreLoss(debug=debug)
+        self.desc_dist = DiscriptorDistinctionLoss()
+        self.desc_match = DiscriptorMatchLoss(writer=writer)
+        self.desc_ret = DiscriptorRententionLoss(writer=writer)
         self.projector = Projector()
-        self.score_loss = ScoreLoss(debug=debug)
-        self.match = DiscriptorMatchLoss(debug=debug)
         self.debug = Visualization('loss') if debug else debug
 
-    def forward(self, descriptors, points, pointness, depths_dense, poses, K, imgs):
+    def forward(self, descriptors, points, pointness, depths_dense, poses, K, imgs, env):
         def batch_project(pts):
             return self.projector.cartesian(pts, depths_dense, poses, K)
 
         H, W = pointness.size(2), pointness.size(3)
-        distinction = self.beta[0] * self.distinction(descriptors)
-        cornerness = self.beta[1] * self.score_loss(pointness, imgs, batch_project)
+        cornerness = self.beta[0] * self.score_corner(pointness, imgs, batch_project)
+        distinction = self.beta[1] * self.desc_dist(descriptors)
         proj_pts, invis_idx = batch_project(points)
-        match = self.beta[2] * self.match(descriptors, points.unsqueeze(0), proj_pts, invis_idx, H, W)
-        loss = distinction + cornerness + match
+        match = self.beta[2] * self.desc_match(descriptors, points.unsqueeze(0), proj_pts, invis_idx, H, W)
+        retention = self.beta[3] * self.desc_ret(points, depths_dense, poses, K, descriptors, env[0])
+        loss = distinction + cornerness + match + retention
 
         if self.writer is not None:
             self.n_iter = self.n_iter + 1
             self.writer.add_scalars('Loss', {'distinction': distinction,
                                              'cornerness': cornerness,
                                              'match': match,
+                                             'retention': retention,
                                              'all': loss}, self.n_iter)
 
         if self.debug is not False:
@@ -47,17 +52,6 @@ class FeatureNetLoss(nn.Module):
             self.debug.showmatch(imgs[0], points[0], imgs[1], _proj_pts[0, 1])
 
         return loss
-
-
-class DistinctionLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.relu = nn.ReLU()
-        self.cosine = PairwiseCosine(inter_batch=False)
-
-    def forward(self, descriptors):
-        pcos = self.cosine(descriptors, descriptors)
-        return self.relu(pcos).mean()
 
 
 class ScoreLoss(nn.Module):
@@ -122,25 +116,50 @@ class ScoreLoss(nn.Module):
         return (target > 0).to(target)
 
 
-class ScoreProjectionLoss(nn.Module):
+class DiscriptorDistinctionLoss(nn.Module):
     def __init__(self):
         super().__init__()
-        self.sample = GridSample()
-        self.mseloss = nn.MSELoss(reduction='none')
+        self.relu = nn.ReLU()
+        self.cosine = PairwiseCosine(inter_batch=False)
 
-    def forward(self, pointness, scores_src, proj_pts, invis_idx):
-        scores_dst = self.sample((pointness, proj_pts))
-        scores_src = scores_src.unsqueeze(0).expand_as(scores_dst)
-        proj_loss = self.mseloss(scores_dst, scores_src)
-        src_idx, dst_idx, pts_idx = invis_idx
-        proj_loss[src_idx, dst_idx, pts_idx] = 0
-        return proj_loss.mean()
+    def forward(self, descriptors):
+        pcos = self.cosine(descriptors, descriptors)
+        return self.relu(pcos).mean()
+
+
+class DiscriptorRententionLoss(nn.Module):
+    def __init__(self, writer=None):
+        super().__init__()
+        self.writer = writer
+        self.memory = {}
+        self.projector = Projector()
+        self.cosine = nn.CosineSimilarity(dim=-1)
+        self.n_iter = 0
+
+    def forward(self, points, depth_map, pose, K, descriptors, env):
+        if env not in self.memory:
+            self.memory[env] = Memory(N=50000).to(points)
+        memory = self.memory[env]
+
+        points_w = self.projector.pix2world(points, depth_map, pose, K)
+        mask = points_w.isfinite().all(dim=-1)
+        valid_pts, valid_desc = points_w[mask], descriptors[mask]
+
+        matched_desc, n_match = memory.write(valid_pts, valid_desc, match_count=True)
+
+        if self.writer is not None:
+            self.n_iter += 1
+            self.writer.add_scalars('Misc/DiscriptorRentention', {
+                'n_match': n_match
+            }, self.n_iter)
+
+        return 1 - self.cosine(valid_desc, matched_desc).mean()
 
 
 class DiscriptorMatchLoss(nn.Module):
-    def __init__(self, radius=1, debug=False):
+    def __init__(self, radius=1, writer=None):
         super(DiscriptorMatchLoss, self).__init__()
-        self.radius, self.debug = radius, debug
+        self.radius, self.writer, self.n_iter = radius, writer, 0
         self.cosine = PairwiseCosine(inter_batch=True)
 
     def forward(self, descriptors, pts_src, pts_dst, invis_idx, height, width):
@@ -151,10 +170,17 @@ class DiscriptorMatchLoss(nn.Module):
         dist[tuple(invis_idx)] = float('nan')
         pcos = self.cosine(descriptors, descriptors)
 
-        match_cos = pcos[(dist <= self.radius).triu(diagonal=1)]
-        _match_cos = pcos[(dist > self.radius).triu(diagonal=1)]
+        match = (dist <= self.radius).triu(diagonal=1)
+        miss = (dist > self.radius).triu(diagonal=1)
 
-        return (1 - match_cos.mean()) + _match_cos.mean()
+        if self.writer is not None:
+            self.n_iter += 1
+            self.writer.add_scalars('Misc/DiscriptorMatch', {
+                'n_match': match.sum(),
+                'n_miss': miss.sum(),
+            }, self.n_iter)
+
+        return (1 - pcos[match].mean()) + pcos[miss].mean()
 
 
 class PairwiseCosine(nn.Module):

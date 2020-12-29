@@ -54,7 +54,7 @@ class TartanAir(Dataset):
         pose = self.poses[seq][frame]
         if self.augment is not False:
             image, K, depth = self.augment(image, self.K, depth)
-        return image, depth, pose, K
+        return image, depth, pose, K, seq.split(os.path.sep)[-3]
 
 
 class TartanAirTest(Dataset):

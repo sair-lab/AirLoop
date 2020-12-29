@@ -12,8 +12,10 @@ import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
+from tensorboard import program
 from torchvision import transforms as T
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from utils import Visualization
 from datasets import AirSampler
@@ -23,7 +25,6 @@ from models import ConsecutiveMatch
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
 from datasets import TartanAir, TartanAirTest
-from torch.utils.tensorboard import SummaryWriter
 
 
 def test(net, loader, args=None):
@@ -53,14 +54,14 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
     vis_score = Visualization('score', args.debug)
     match = ConsecutiveMatch()
     enumerater = tqdm.tqdm(enumerate(loader))
-    for idx, (images, depths, poses, K) in enumerater:
+    for idx, (images, depths, poses, K, env) in enumerater:
         images = images.to(args.device)
         depths = depths.to(args.device)
         poses = poses.to(args.device)
         K = K.to(args.device)
         optimizer.zero_grad()
         descriptors, points, pointness, scores = net(images)
-        loss = criterion(descriptors, points, pointness, depths, poses, K, images)
+        loss = criterion(descriptors, points, pointness, depths, poses, K, images, env)
         loss.backward()
         optimizer.step()
         train_loss.popleft()
@@ -125,7 +126,16 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_data, batch_sampler=train_sampler, pin_memory=True, num_workers=args.num_workers)
     test_loader = DataLoader(test_data, batch_sampler=test_sampler, pin_memory=True, num_workers=args.num_workers)
 
-    criterion = FeatureNetLoss(debug=args.debug, writer=SummaryWriter(args.log_dir) if args.log_dir else None)
+    writer = None
+    if args.log_dir is not None:
+        from datetime import datetime
+        current_time = datetime.now().strftime('%b%d_%H-%M-%S')
+        writer = SummaryWriter(os.path.join(args.log_dir, current_time))
+        tb = program.TensorBoard()
+        tb.configure(argv=[None, '--logdir', args.log_dir, '--bind_all'])
+        print(('TensorBoard at %s \n' % tb.launch()))
+
+    criterion = FeatureNetLoss(debug=args.debug, writer=writer)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)

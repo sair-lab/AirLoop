@@ -16,12 +16,12 @@ class Memory(nn.Module):
         self.cosine = PairwiseCosine() 
 
     @torch.no_grad()
-    def write(self, points, descriptors):
-        idx, momentum = self.point_address(points)
+    def write(self, points, descriptors, match_count=False):
+        idx, momentum, n_match = self.point_address(points)
         self.usage[idx] += 1
         self.points[idx] = self.moving(self.points[idx], points, momentum)
         self.descriptors[idx] = self.moving(self.descriptors[idx], descriptors, momentum)
-        return self.descriptors[idx]
+        return self.descriptors[idx], n_match if match_count else self.descriptors[idx]
 
     @torch.no_grad()
     def read(self, descriptors):
@@ -35,11 +35,12 @@ class Memory(nn.Module):
     @torch.no_grad()
     def point_address(self, points):
         dist, idx = torch.cdist(points, self.points, p=2).min(dim=-1)
-        mask = dist > self.eps
-        idx[mask] = self.usage.topk(k=mask.sum(), largest=False).indices
+        miss = dist > self.eps
+        n_miss = int(miss.sum())
+        idx[miss] = self.usage.topk(k=n_miss, largest=False).indices
         momentum = torch.zeros_like(idx)
-        momentum[mask == 0] = self.momentum
-        return idx, momentum.unsqueeze(-1)
+        momentum[~miss] = self.momentum
+        return idx, momentum.unsqueeze(-1), len(points) - n_miss
 
     @torch.no_grad()
     def address(self, descriptors):
