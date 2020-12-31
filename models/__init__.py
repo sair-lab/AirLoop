@@ -5,6 +5,6 @@ from .tool import count_parameters
 from .tool import EarlyStopScheduler
 
 from .featurenet import FeatureNet
-from .loss import FeatureNetLoss
+from .loss import FeatureNetLoss, PairwiseCosine
 
 from .BAnet import ConsecutiveMatch

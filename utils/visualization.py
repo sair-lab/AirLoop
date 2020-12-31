@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import cv2
 import torch
 import numpy as np
@@ -9,17 +10,26 @@ import matplotlib.colors as mc
 import kornia.geometry.conversions as C
 
 
-class Visualization():
-    def __init__(self, winname=None, debug=False):
-        self.winname, self.debug = winname, debug
-        self.radius = 1
-        self.thickness = 1
+class Visualizer():
+    vis_id = 0
 
-    def show(self, images, points=None, color='red', nrow=2, values=None, vmin=None, vmax=None):
+    def __init__(self, display='imshow', default_name=None, **kwargs):
+        self.radius, self.thickness = 1, 1
+        self.default_name = 'Visualizer %d' % self.vis_id if default_name is None else default_name
+        Visualizer.vis_id += 1
+
+        if display == 'imshow':
+            self.displayer = ImshowDisplayer()
+        elif display == 'tensorboard':
+            self.displayer = TBDisplayer(kwargs['writer'])
+        elif display == 'video':
+            self.displayer = VideoFileDisplayer(kwargs['save_dir'], **kwargs)
+
+    def show(self, images, points=None, color='red', nrow=4, values=None, vmin=None, vmax=None, name=None, step=0):
         b, c, h, w = images.shape
         if c == 3:
             images = torch2cv(images)
-        elif c == 1: # show colored values
+        elif c == 1:  # show colored values
             images = images.detach().cpu().numpy().transpose((0, 2, 3, 1))
             images = get_colors(color, images.squeeze(-1), vmin, vmax)
 
@@ -29,25 +39,30 @@ class Visualization():
                 colors = get_colors(color, [0]*len(pts) if values is None else values[i], vmin, vmax)
                 images[i] = circles(images[i], pts, self.radius, colors, self.thickness)
 
+        disp_name = name if name is not None else self.default_name
+
         if nrow is not None:
             images = torch.tensor(images.copy()).permute((0, 3, 1, 2))
             grid = torchvision.utils.make_grid(images, nrow=nrow, padding=1).permute((1, 2, 0))
-            cv2.imshow(self.winname, grid.numpy())
+            self.displayer.display(disp_name, grid.numpy(), step)
         else:
             for i, img in enumerate(images):
-                cv2.imshow(self.winname+str(i), img)
-        cv2.waitKey(1)
+                self.displayer.display(disp_name + str(i), img, step)
 
-    def showmatch(self, img1, pts1, img2, pts2, color='blue', values=None, vmin=None, vmax=None):
-        assert len(pts1) == len(pts2)
-        h, w = img1.size(-2), img1.size(-1)
-        pts1 = C.denormalize_pixel_coordinates(pts1, h, w).to(torch.int)
-        pts2 = C.denormalize_pixel_coordinates(pts2, h, w).to(torch.int)
-        img1, img2 = torch2cv(torch.stack([img1, img2]))
-        colors = get_colors(color, [0]*len(pts1) if values is None else values, vmin, vmax)
-        image = matches(img1, pts1, img2, pts2, colors)
-        cv2.imshow(self.winname, image)
-        cv2.waitKey(1)
+    def showmatch(self, imges1, points1, images2, points2, color='blue', values=None, vmin=None, vmax=None, name=None, step=0):
+        match_pairs = []
+        for i, (img1, pts1, img2, pts2) in enumerate(zip(imges1, points1, images2, points2)):
+            assert len(pts1) == len(pts2)
+            h, w = img1.size(-2), img1.size(-1)
+            pts1 = C.denormalize_pixel_coordinates(pts1, h, w)
+            pts2 = C.denormalize_pixel_coordinates(pts2, h, w)
+            img1, img2 = torch2cv(torch.stack([img1, img2]))
+            colors = get_colors(color, [0]*len(pts1) if values is None else values[i], vmin, vmax)
+            match_pairs.append(torch.tensor(matches(img1, pts1, img2, pts2, colors)))
+
+        images = torch.stack(match_pairs).permute((0, 3, 1, 2))
+        grid = torchvision.utils.make_grid(images, nrow=2, padding=1).permute((1, 2, 0))
+        self.displayer.display(name if name is not None else self.default_name, grid.numpy(), step)
 
     def reprojectshow(self, imgs, pts_src, pts_dst, src, dst):
         # TODO not adapted for change in torch2cv
@@ -60,6 +75,58 @@ class Visualization():
             image = matches(img1,pts1,img2,pts2,self.blue,2)
             cv2.imshow(self.winname+'-dst', image)
             cv2.waitKey(1)
+
+    def close(self):
+        self.displayer.close()
+
+
+class VisDisplayer():
+    def display(self, name, frame, step=0):
+        raise NotImplementedError()
+
+    def close(self):
+        pass
+
+
+class ImshowDisplayer(VisDisplayer):
+    def display(self, name, frame, step=0):
+        cv2.imshow(name, frame)
+        cv2.waitKey(1)
+
+    def close(self):
+        cv2.destroyAllWindows()
+
+
+class TBDisplayer(VisDisplayer):
+    def __init__(self, writer):
+        self.writer = writer
+
+    def display(self, name, frame, step=0):
+        self.writer.add_image(name, frame[:, :, ::-1], step, dataformats='HWC')
+
+
+class VideoFileDisplayer(VisDisplayer):
+    def __init__(self, save_dir=None, framerate=10):
+        if save_dir is None:
+            from datetime import datetime
+            current_time = datetime.now().strftime('%b%d_%H-%M-%S')
+            self.save_dir = os.path.join('.', 'vidout', current_time)
+        else:
+            self.save_dir = save_dir
+        self.framerate = framerate
+        self.writer = {}
+
+    def display(self, name, frame, step=0):
+        if name not in self.writer:
+            os.makedirs(self.save_dir, exist_ok=True)
+            self.writer[name] = cv2.VideoWriter(os.path.join(self.save_dir, '%s.avi' % name),
+                                                cv2.VideoWriter_fourcc(*'avc1'),
+                                                self.framerate, (frame.shape[1], frame.shape[0]))
+        self.writer[name].write(frame)
+
+    def close(self):
+        for wn in self.writer:
+            self.writer[wn].release()
 
 
 def matches(img1, pts1, img2, pts2, colors, circ_radius=3, thickness=1):

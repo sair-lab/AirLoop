@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
 
-from .visualization import Visualization
+from .visualization import Visualizer
 
 from .geometry import Projector

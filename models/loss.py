@@ -5,16 +5,16 @@ import kornia as kn
 import torch.nn as nn
 import kornia.feature as kf
 import torch.nn.functional as F
-from utils import Visualization
-from utils import Projector
 import kornia.geometry.conversions as C
 
+from utils import Projector
+from utils import Visualizer
 from models.memory import Memory
 from models.featurenet import GridSample
-
+from models.BAnet import ConsecutiveMatch
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 1, 1, 1], K=None, debug=False, writer=None):
+    def __init__(self, beta=[1, 1, 1, 10], K=None, debug=False, writer=None, viz_start=float('inf'), viz_freq=200):
         super().__init__()
         self.writer, self.beta, self.n_iter = writer, beta, 0
         self.score_corner = ScoreLoss(debug=debug)
@@ -22,35 +22,41 @@ class FeatureNetLoss(nn.Module):
         self.desc_match = DiscriptorMatchLoss(writer=writer)
         self.desc_ret = DiscriptorRententionLoss(writer=writer)
         self.projector = Projector()
-        self.debug = Visualization('loss') if debug else debug
+        self.viz = Visualizer() if self.writer is None else Visualizer('tensorboard', writer=self.writer)
+        self.viz_start, self.viz_freq = viz_start, viz_freq
 
-    def forward(self, descriptors, points, pointness, depths_dense, poses, K, imgs, env):
+    def forward(self, descriptors, points, scores, score_map, depth_map, poses, K, imgs, env):
         def batch_project(pts):
-            return self.projector.cartesian(pts, depths_dense, poses, K)
+            return self.projector.cartesian(pts, depth_map, poses, K)
 
-        H, W = pointness.size(2), pointness.size(3)
-        cornerness = self.beta[0] * self.score_corner(pointness, imgs, batch_project)
+        H, W = score_map.size(2), score_map.size(3)
+        cornerness = self.beta[0] * self.score_corner(score_map, imgs, batch_project)
         distinction = self.beta[1] * self.desc_dist(descriptors)
         proj_pts, invis_idx = batch_project(points)
         match = self.beta[2] * self.desc_match(descriptors, points.unsqueeze(0), proj_pts, invis_idx, H, W)
-        retention = self.beta[3] * self.desc_ret(points, depths_dense, poses, K, descriptors, env[0])
+        retention = self.beta[3] * self.desc_ret(points, depth_map, poses, K, descriptors, env[0])
         loss = distinction + cornerness + match + retention
 
         if self.writer is not None:
-            self.n_iter = self.n_iter + 1
             self.writer.add_scalars('Loss', {'distinction': distinction,
                                              'cornerness': cornerness,
                                              'match': match,
                                              'retention': retention,
                                              'all': loss}, self.n_iter)
 
-        if self.debug is not False:
-            print('Loss: ', distinction, cornerness, match)
-            src_idx, dst_idx, pts_idx = invis_idx
-            _proj_pts = proj_pts.clone()
-            _proj_pts[src_idx, dst_idx, pts_idx, :] = float('nan')
-            self.debug.showmatch(imgs[0], points[0], imgs[1], _proj_pts[0, 1])
+        if self.n_iter >= self.viz_start and self.n_iter % self.viz_freq == 0:
+            self.viz.show(imgs, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='train', step=self.n_iter)
 
+            self.viz.show(score_map, color='hot', vmax=0.01, name='score', step=self.n_iter)
+
+            pair = torch.tensor([[0, 1], [0, 3], [0, 5], [0, 7]])
+            b_src, b_dst = pair[:, 0], pair[:, 1]
+            matched, confidence = ConsecutiveMatch()(descriptors[b_src], descriptors[b_dst], points[b_dst])
+            top_conf, top_idx = confidence.topk(50, dim=1)
+            top_conf, top_idx = top_conf.detach().cpu().numpy(), top_idx.unsqueeze(-1).repeat(1, 1, 2)
+            self.viz.showmatch(imgs[b_src], points[b_src].gather(1, top_idx), imgs[b_dst], matched.gather(1, top_idx), 'hot', top_conf, 0.9, 1, name='match', step=self.n_iter)
+
+        self.n_iter += 1
         return loss
 
 
@@ -62,7 +68,7 @@ class ScoreLoss(nn.Module):
         self.num_corners = num_corners
         self.pool = nn.MaxPool2d(kernel_size=radius, return_indices=True)
         self.unpool = nn.MaxUnpool2d(kernel_size=radius)
-        self.debug = Visualization('corners') if debug else debug
+        self.debug = Visualizer(default_name='corners') if debug else debug
 
     def forward(self, scores_dense, imgs, projector):
         corners = self.get_corners(imgs, projector)

@@ -5,8 +5,9 @@ import torch
 import numpy as np
 import kornia as kn
 import torch.nn as nn
-from torchvision import models
 import torch.nn.functional as F
+
+import models
 
 
 class BAGDnet(nn.Module):
@@ -53,19 +54,11 @@ class BAGDnet(nn.Module):
 class ConsecutiveMatch(nn.Module):
     def __init__(self):
         super().__init__()
-        self.cosine = nn.CosineSimilarity(dim=-2)
+        self.cosine = models.PairwiseCosine()
 
-    def forward(self, descriptors, points):
-        desc_src = descriptors[:-1]
-        desc_dst = descriptors[1:]
-        # batch pairwise cosine
-        x = desc_src.permute((1, 2, 0)).unsqueeze(1)
-        y = desc_dst.permute((1, 2, 0))
-        c = self.cosine(x, y)
-        pcos = c.permute((2, 0, 1))
-
-        confidence, idx = pcos.max(dim=2)
-        matched = points[1:].gather(1, idx.unsqueeze(2).expand(-1, -1, 2))
+    def forward(self, desc_src, desc_dst, points_dst):
+        confidence, idx = self.cosine(desc_src, desc_dst).max(dim=2)
+        matched = points_dst.gather(1, idx.unsqueeze(2).expand(-1, -1, 2))
 
         return matched, confidence
 

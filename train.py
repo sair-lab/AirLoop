@@ -17,7 +17,7 @@ from torchvision import transforms as T
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import Visualization
+from utils import Visualizer
 from datasets import AirSampler
 from models import FeatureNet
 from models import FeatureNetLoss
@@ -29,7 +29,7 @@ from datasets import TartanAir, TartanAirTest
 
 def test(net, loader, args=None):
     net.eval()
-    vis = Visualization('test')
+    vis = Visualizer()
     match = ConsecutiveMatch()
     with torch.no_grad():
         for idx, (image, pose, K) in enumerate(tqdm.tqdm(loader)):
@@ -49,10 +49,6 @@ def test(net, loader, args=None):
 def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
     net.train()
     train_loss, batches = deque([0] * loss_ave), len(loader)
-    vis_train = Visualization('train', args.debug)
-    vis_match = Visualization('match', args.debug)
-    vis_score = Visualization('score', args.debug)
-    match = ConsecutiveMatch()
     enumerater = tqdm.tqdm(enumerate(loader))
     for idx, (images, depths, poses, K, env) in enumerater:
         images = images.to(args.device)
@@ -61,7 +57,7 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
         K = K.to(args.device)
         optimizer.zero_grad()
         descriptors, points, pointness, scores = net(images)
-        loss = criterion(descriptors, points, pointness, depths, poses, K, images, env)
+        loss = criterion(descriptors, points, scores, pointness, depths, poses, K, images, env)
         loss.backward()
         optimizer.step()
         train_loss.popleft()
@@ -70,17 +66,6 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
             train_loss[-1] = np.mean(list(train_loss)[:-1])
             print('Warning: loss is nan during iteration %d.' % idx)
         enumerater.set_description("Loss: %.4f on %d/%d"%(sum(train_loss)/(loss_ave), idx+1, batches))
-        if idx > args.visualize:
-            vis_train.show(images, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy())
-
-            vis_score.show(pointness, color='hot', vmax=0.01)
-
-            matched, confidence = match(descriptors[[0, -1]], points[[0, -1]])
-            for (img0, pts0, img1, pts1, conf) in zip(images[[0]], points[[0]], images[[-1]], matched, confidence):
-                top_conf, top_idx = conf.topk(100)
-                top_conf = top_conf.detach().cpu().numpy()
-                vis_match.showmatch(img0, pts0[top_idx], img1, pts1[top_idx], 'hot', top_conf, 0.9, 1)
-
     return sum(train_loss)/(loss_ave)
 
 
@@ -135,7 +120,7 @@ if __name__ == "__main__":
         tb.configure(argv=[None, '--logdir', args.log_dir, '--bind_all'])
         print(('TensorBoard at %s \n' % tb.launch()))
 
-    criterion = FeatureNetLoss(debug=args.debug, writer=writer)
+    criterion = FeatureNetLoss(debug=args.debug, writer=writer, viz_start=args.visualize)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
