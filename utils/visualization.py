@@ -21,9 +21,9 @@ class Visualizer():
         if display == 'imshow':
             self.displayer = ImshowDisplayer()
         elif display == 'tensorboard':
-            self.displayer = TBDisplayer(kwargs['writer'])
+            self.displayer = TBDisplayer(**kwargs)
         elif display == 'video':
-            self.displayer = VideoFileDisplayer(kwargs['save_dir'], **kwargs)
+            self.displayer = VideoFileDisplayer(**kwargs)
 
     def show(self, images, points=None, color='red', nrow=4, values=None, vmin=None, vmax=None, name=None, step=0):
         b, c, h, w = images.shape

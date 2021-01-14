@@ -10,13 +10,14 @@ from torchvision.transforms import functional as F
 
 
 class AirAugment(nn.Module):
-    def __init__(self, scale=1, size=[480, 640]):
+    def __init__(self, scale=1, size=[480, 640], resize_only=False):
         super().__init__()
         self.img_size = (np.array(size) * scale).round().astype(np.int32)
         self.resize_totensor = T.Compose([T.Resize(self.img_size.tolist()), np.array, T.ToTensor()])
         self.rand_crop = T.RandomResizedCrop(self.img_size.tolist(), scale=(0.1, 1.0))
         self.rand_rotate = T.RandomRotation(45, resample=Image.BILINEAR)
         self.rand_color = T.ColorJitter(0.8, 0.8, 0.8)
+        self.p = [1, 0, 0, 0] if resize_only else [0.25]*4
 
     def apply_affine(self, K, translation=[0, 0], center=[0, 0], scale=[1, 1], angle=0):
         """Applies transformation to K in the order: (R, S), T. All coordinates are in (h, w) order.
@@ -36,7 +37,7 @@ class AirAugment(nn.Module):
         in_size = np.array(image.size[::-1])
         center, scale, angle = in_size/2, self.img_size/in_size, 0
 
-        transform = np.random.choice(np.arange(4), p=[0.25]*4)
+        transform = np.random.choice(np.arange(len(self.p)), p=self.p)
         if transform == 1:
             trans = self.rand_crop
             i, j, h, w = T.RandomResizedCrop.get_params(image, trans.scale, trans.ratio)

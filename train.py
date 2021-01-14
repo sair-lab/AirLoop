@@ -48,7 +48,7 @@ def test(net, loader, args=None):
 
 def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
     net.train()
-    train_loss, batches = deque([0] * loss_ave), len(loader)
+    train_loss, batches = deque(), len(loader)
     enumerater = tqdm.tqdm(enumerate(loader))
     for idx, (images, depths, poses, K, env) in enumerater:
         images = images.to(args.device)
@@ -60,13 +60,16 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
         loss = criterion(descriptors, points, scores, pointness, depths, poses, K, images, env)
         loss.backward()
         optimizer.step()
-        train_loss.popleft()
-        train_loss.append(loss.item())
+
         if np.isnan(loss.item()):
-            train_loss[-1] = np.mean(list(train_loss)[:-1])
-            print('Warning: loss is nan during iteration %d.' % idx)
-        enumerater.set_description("Loss: %.4f on %d/%d"%(sum(train_loss)/(loss_ave), idx+1, batches))
-    return sum(train_loss)/(loss_ave)
+            print('Warning: loss is nan during iteration %d. BP skipped.' % idx)
+        else:
+            train_loss.append(loss.item())
+            if len(train_loss) > loss_ave:
+                train_loss.popleft()
+        enumerater.set_description("Loss: %.4f on %d/%d"%(np.average(train_loss), idx+1, batches))
+
+    return np.average(train_loss)
 
 
 if __name__ == "__main__":
@@ -94,7 +97,8 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--num-workers", type=int, default=4, help="workers of dataloader")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
-    parser.add_argument("--visualize", type=int, nargs='?', default=np.inf, action='store', const=1000, help='Visualize starting from iteration')
+    parser.add_argument("--viz_start", type=int, default=np.inf, help='Visualize starting from iteration')
+    parser.add_argument("--viz_freq", type=int, default=1, help='Visualize every * iteration(s)')
     parser.add_argument("--debug", default=False, action='store_true')
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
@@ -120,7 +124,7 @@ if __name__ == "__main__":
         tb.configure(argv=[None, '--logdir', args.log_dir, '--bind_all'])
         print(('TensorBoard at %s \n' % tb.launch()))
 
-    criterion = FeatureNetLoss(debug=args.debug, writer=writer, viz_start=args.visualize)
+    criterion = FeatureNetLoss(debug=args.debug, writer=writer, viz_start=args.viz_start, viz_freq=args.viz_freq)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)

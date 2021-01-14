@@ -21,7 +21,7 @@ from .augment import AirAugment
 class TartanAir(Dataset):
     def __init__(self, root, scale=1, augment=True, catalog_path=None):
         super().__init__()
-        self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
+        self.augment = AirAugment(scale, size=[480, 640], resize_only=not augment)
         if catalog_path is not None and os.path.exists(catalog_path):
             with bz2.BZ2File(catalog_path, 'rb') as f:
                 self.sequences, self.image, self.depth, self.poses, self.sizes = pickle.load(f)
@@ -52,15 +52,14 @@ class TartanAir(Dataset):
         image = Image.open(self.image[seq][frame])
         depth = F.to_pil_image(np.load(self.depth[seq][frame]), mode='F')
         pose = self.poses[seq][frame]
-        if self.augment is not False:
-            image, K, depth = self.augment(image, self.K, depth)
+        image, K, depth = self.augment(image, self.K, depth)
         return image, depth, pose, K, seq.split(os.path.sep)[-3]
 
 
 class TartanAirTest(Dataset):
     def __init__(self, root, scale=1, augment=False, catalog_path=None):
         super().__init__()
-        self.augment = augment if augment is None else AirAugment(scale, size=[480, 640])
+        self.augment = AirAugment(scale, size=[480, 640], resize_only=not augment)
         if catalog_path is not None and os.path.exists(catalog_path):
             with bz2.BZ2File(catalog_path, 'rb') as f:
                 self.sequences, self.image, self.poses, self.sizes = pickle.load(f)
@@ -90,8 +89,7 @@ class TartanAirTest(Dataset):
         seq, K = self.sequences[i], self.K
         image = Image.open(self.image[seq][frame])
         pose = self.poses[seq][frame]
-        if self.augment is not False:
-            image, K = self.augment(image, self.K)
+        image, K = self.augment(image, self.K)
         return image, pose, K
 
 
