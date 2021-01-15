@@ -75,19 +75,23 @@ class GraphAttn(nn.Module):
         return self.alpha * h + (1-self.alpha) * adj @ h
 
 
+class BatchNorm2dwC(nn.Module):
+    def __init__(self, in_features):
+        super().__init__()
+        self.bn = nn.BatchNorm3d(1)
+
+    def forward(self, x):
+        return self.bn(x.unsqueeze(1)).squeeze(1)
+
+
 class ScoreHead(nn.Module):
     def __init__(self, in_scale):
         super().__init__()
-        self.scores_vgg = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1), nn.ReLU(),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ReLU())
-        self.scores_img = nn.Sequential(
-            nn.BatchNorm2d(3),
-            nn.Conv2d(3, 8, kernel_size=3, padding=1), nn.ReLU(),
-            nn.Conv2d(8, 16, kernel_size=3, padding=1), nn.ReLU(),
+        self.scores_vgg = nn.Sequential(make_layer(256, 128), make_layer(128, 64, bn=BatchNorm2dwC))
+        self.scores_img = nn.Sequential(make_layer(3, 8), make_layer(8, 16, bn=BatchNorm2dwC),
             PixelUnshuffle(downscale_factor=in_scale))
         self.combine = nn.Sequential(
-            nn.Conv2d(64 + 16 * in_scale**2, 128, kernel_size=3, padding=1), nn.Softmax(dim=1),
+            make_layer(64 + 16 * in_scale**2, in_scale**2 + 1, bn=BatchNorm2dwC, activation=nn.Softmax(dim=1)),
             IndexSelect(dim=1, index=torch.arange(in_scale**2)),
             nn.PixelShuffle(upscale_factor=in_scale),
             ConstantBorder(border=4, value=0))
@@ -103,13 +107,11 @@ class DescriptorHead(nn.Module):
         self.feat_dim, self.feat_num = feat_dim, feat_num
 
         self.descriptor = nn.Sequential(
-            nn.Conv2d(256, self.feat_dim, kernel_size=3, padding=1), nn.ReLU(),
-            nn.Conv2d(self.feat_dim, self.feat_dim, kernel_size=1))
+            make_layer(256, self.feat_dim),
+            make_layer(self.feat_dim, self.feat_dim, bn=None, activation=None))
         self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
         self.encoder = nn.Sequential(nn.Linear(3, 256), nn.ReLU(), nn.Linear(256, self.feat_dim))
-        self.residual = nn.Sequential(
-            nn.Conv2d(3, 128, kernel_size=9, padding=4), nn.ReLU(),
-            nn.Conv2d(128, self.feat_dim, kernel_size=3, padding=1))
+        self.residual = nn.Sequential(make_layer(3, 128, kernel_size=9, padding=4), make_layer(128, self.feat_dim))
 
     def forward(self, images, features, points, scores):
         descriptors, residual = self.descriptor(features), self.residual(images)
@@ -153,6 +155,13 @@ class FeatureNet(models.VGG):
         descriptors = self.graph(descriptors)
 
         return descriptors, points, pointness, scores
+
+
+def make_layer(in_chan, out_chan, kernel_size=3, stride=1, padding=1, bn=nn.BatchNorm2d, activation=nn.ReLU()):
+    modules = [nn.Conv2d(in_chan, out_chan, kernel_size, stride, padding)] + \
+        ([bn(out_chan)] if bn is not None else []) + \
+        ([activation] if activation is not None else [])
+    return nn.Sequential(*modules)
 
 
 if __name__ == "__main__":
