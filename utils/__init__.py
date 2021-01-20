@@ -3,3 +3,5 @@
 from .visualization import Visualizer
 
 from .geometry import Projector
+
+from .evaluation import MatchEvaluator

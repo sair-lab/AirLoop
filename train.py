@@ -17,14 +17,28 @@ from torchvision import transforms as T
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import Visualizer
 from datasets import AirSampler
 from models import FeatureNet
 from models import FeatureNetLoss
 from models import ConsecutiveMatch
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
+from utils import MatchEvaluator, Visualizer
 from datasets import TartanAir, TartanAirTest
+
+
+@torch.no_grad()
+def evaluate(net, evaluator, loader, args):
+    net.eval()
+    for images, depths, poses, K, env in tqdm.tqdm(loader):
+        images = images.to(args.device)
+        depths = depths.to(args.device)
+        poses = poses.to(args.device)
+        K = K.to(args.device)
+        descriptors, points, pointness, scores = net(images)
+        evaluator.observe(descriptors, points, scores, pointness, depths, poses, K, images)
+
+    evaluator.report(args.eval_freq)
 
 
 def test(net, loader, args=None):
@@ -45,12 +59,11 @@ def test(net, loader, args=None):
                     vis.showmatch(img0, pts0, img1, pts1)
     return 0.9 # accuracy
 
-
-def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
+def train(net, loader, criterion, optimizer, args=None, loss_ave=50, eval_loader=None, evaluator=None):
     net.train()
     train_loss, batches = deque(), len(loader)
-    enumerater = tqdm.tqdm(enumerate(loader))
-    for idx, (images, depths, poses, K, env) in enumerater:
+    enumerator, idx = tqdm.tqdm(loader), 0
+    for images, depths, poses, K, env in enumerator:
         images = images.to(args.device)
         depths = depths.to(args.device)
         poses = poses.to(args.device)
@@ -67,7 +80,13 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50):
             train_loss.append(loss.item())
             if len(train_loss) > loss_ave:
                 train_loss.popleft()
-        enumerater.set_description("Loss: %.4f on %d/%d"%(np.average(train_loss), idx+1, batches))
+        enumerator.set_description("Loss: %.4f at"%(np.average(train_loss)))
+
+        if (idx + 1) % args.eval_freq == 0:
+            evaluate(net, evaluator, eval_loader, args)
+            net.train()
+
+        idx +=1
 
     return np.average(train_loss)
 
@@ -100,19 +119,26 @@ if __name__ == "__main__":
     parser.add_argument("--viz_start", type=int, default=np.inf, help='Visualize starting from iteration')
     parser.add_argument("--viz_freq", type=int, default=1, help='Visualize every * iteration(s)')
     parser.add_argument("--debug", default=False, action='store_true')
+    parser.add_argument("--eval-heldout", type=str, default='abandonedfactory/Hard/P000', help='Regex for held-out sequence')
+    parser.add_argument("--eval-freq", type=int, default=10000, help='Evaluate every * steps')
+    parser.add_argument("--eval-topk", type=int, default=200, help='Only inspect top * matches')
+    parser.add_argument("--eval-back", type=int, nargs='+', default=[1])
     args = parser.parse_args(); print(args)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    train_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog)
+    train_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog, exclude=args.eval_heldout)
+    eval_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog, include=args.eval_heldout, augment=False)
     test_data = TartanAirTest(args.test_root, args.scale, catalog_path=args.test_catalog)
 
     train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)
+    eval_sampler = AirSampler(eval_data, args.batch_size, shuffle=False, overlap=False)
     test_sampler = AirSampler(test_data, args.batch_size, shuffle=False)
 
     train_loader = DataLoader(train_data, batch_sampler=train_sampler, pin_memory=True, num_workers=args.num_workers)
+    eval_loader = DataLoader(eval_data, batch_sampler=eval_sampler, pin_memory=True, num_workers=args.num_workers)
     test_loader = DataLoader(test_data, batch_sampler=test_sampler, pin_memory=True, num_workers=args.num_workers)
 
     writer = None
@@ -129,9 +155,11 @@ if __name__ == "__main__":
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
 
+    evaluator = MatchEvaluator(back=args.eval_back, viz=None, top=args.eval_topk, writer=writer)
+
     timer = Timer()
     for epoch in range(args.epoch):
-        train_acc = train(net, train_loader, criterion, optimizer, args)
+        train_acc = train(net, train_loader, criterion, optimizer, args, eval_loader=eval_loader, evaluator=evaluator)
 
         if args.save is not None:
             os.makedirs(os.path.dirname(args.save), exist_ok=True)

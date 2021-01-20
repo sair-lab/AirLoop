@@ -4,7 +4,7 @@ from .tool import Timer
 from .tool import count_parameters
 from .tool import EarlyStopScheduler
 
-from .featurenet import FeatureNet
-from .loss import FeatureNetLoss, PairwiseCosine
-
 from .BAnet import ConsecutiveMatch
+
+from .featurenet import FeatureNet, GridSample
+from .loss import FeatureNetLoss, PairwiseCosine

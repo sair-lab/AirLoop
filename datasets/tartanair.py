@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import bz2
 import glob
 import torch
@@ -19,7 +20,7 @@ from .augment import AirAugment
 
 
 class TartanAir(Dataset):
-    def __init__(self, root, scale=1, augment=True, catalog_path=None):
+    def __init__(self, root, scale=1, augment=True, catalog_path=None, exclude=None, include=None):
         super().__init__()
         self.augment = AirAugment(scale, size=[480, 640], resize_only=not augment)
         if catalog_path is not None and os.path.exists(catalog_path):
@@ -42,6 +43,18 @@ class TartanAir(Dataset):
         # Camera Intrinsics of TartanAir Dataset
         fx, fy, cx, cy = 320, 320, 320, 240
         self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+
+        # include/exclude seq with regex
+        incl_pattern = re.compile(include) if include is not None else None
+        excl_pattern = re.compile(exclude) if exclude is not None else None
+        final_list = []
+        for seq, size in zip(self.sequences, self.sizes):
+            if (incl_pattern and incl_pattern.search(seq) is None) or \
+                    (excl_pattern and excl_pattern.search(seq) is not None):
+                del self.poses[seq], self.image[seq], self.depth[seq]
+            else:
+                final_list.append((seq, size))
+        self.sequences, self.sizes = zip(*final_list) if len(final_list) > 0 else ([], [])
 
     def __len__(self):
         return sum(self.sizes)
@@ -94,17 +107,15 @@ class TartanAirTest(Dataset):
 
 
 class AirSampler(Sampler):
-    def __init__(self, data, batch_size, shuffle=True):
+    def __init__(self, data, batch_size, shuffle=True, overlap=True):
         self.data_sizes = data.sizes
         self.bs = batch_size
         self.shuffle = shuffle
-        batches = []
+        self.batches = []
         for i, size in enumerate(self.data_sizes):
-            num = size - self.bs + 1
-            L = torch.randperm(num) if self.shuffle else torch.arange(num)
-            batches += [list(zip([i]*self.bs, range(L[n], L[n]+self.bs))) for n in range(num)]
-        L = torch.randperm(len(batches))
-        self.batches = [batches[L[n]] for n in range(len(batches))] if self.shuffle else batches
+            b_start = np.arange(0, size - self.bs, 1 if overlap else self.bs)
+            self.batches += [list(zip([i]*self.bs, range(st, st+self.bs))) for st in b_start]
+        if self.shuffle: np.random.shuffle(self.batches)
 
     def __iter__(self):
         return iter(self.batches)
