@@ -119,7 +119,8 @@ if __name__ == "__main__":
     parser.add_argument("--viz_start", type=int, default=np.inf, help='Visualize starting from iteration')
     parser.add_argument("--viz_freq", type=int, default=1, help='Visualize every * iteration(s)')
     parser.add_argument("--debug", default=False, action='store_true')
-    parser.add_argument("--eval-heldout", type=str, default='abandonedfactory/Hard/P000', help='Regex for held-out sequence')
+    parser.add_argument("--eval-split-seed", type=int, default=42, help='Seed for splitting the dataset')
+    parser.add_argument("--eval-percentage", type=float, default=0.2, help='Percentage of sequences for eval')
     parser.add_argument("--eval-freq", type=int, default=10000, help='Evaluate every * steps')
     parser.add_argument("--eval-topk", type=int, default=200, help='Only inspect top * matches')
     parser.add_argument("--eval-back", type=int, nargs='+', default=[1])
@@ -129,8 +130,8 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    train_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog, exclude=args.eval_heldout)
-    eval_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog, include=args.eval_heldout, augment=False)
+    train_data, eval_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog) \
+        .rand_split([1 - args.eval_percentage, args.eval_percentage], args.eval_split_seed)
     test_data = TartanAirTest(args.test_root, args.scale, catalog_path=args.test_catalog)
 
     train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)

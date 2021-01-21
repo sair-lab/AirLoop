@@ -10,6 +10,7 @@ import numpy as np
 import kornia as kn
 from os import path
 from PIL import Image
+from copy import copy
 from torch.utils.data import Sampler
 from torch.utils.data import Dataset
 from torchvision import transforms as T
@@ -67,6 +68,17 @@ class TartanAir(Dataset):
         pose = self.poses[seq][frame]
         image, K, depth = self.augment(image, self.K, depth)
         return image, depth, pose, K, seq.split(os.path.sep)[-3]
+
+    def rand_split(self, ratio, seed=42):
+        total, ratio = len(self.sequences), np.array(ratio)
+        split_idx = np.cumsum(np.round(ratio / sum(ratio) * total), dtype=np.int)[:-1]
+        subsets = []
+        for perm in np.split(np.random.default_rng(seed=seed).permutation(total), split_idx):
+            subset = copy(self)
+            subset.sequences = np.take(self.sequences, perm).tolist()
+            subset.sizes = np.take(self.sizes, perm).tolist()
+            subsets.append(subset)
+        return subsets
 
 
 class TartanAirTest(Dataset):
