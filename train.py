@@ -24,7 +24,7 @@ from models import ConsecutiveMatch
 from models import EarlyStopScheduler
 from models import Timer, count_parameters
 from utils import MatchEvaluator, Visualizer
-from datasets import TartanAir, TartanAirTest
+from datasets import TartanAir, TartanAirTest, AirAugment
 
 
 @torch.no_grad()
@@ -132,6 +132,7 @@ if __name__ == "__main__":
 
     train_data, eval_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog) \
         .rand_split([1 - args.eval_percentage, args.eval_percentage], args.eval_split_seed)
+    eval_data.augment = AirAugment(args.scale, resize_only=True)
     test_data = TartanAirTest(args.test_root, args.scale, catalog_path=args.test_catalog)
 
     train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)
