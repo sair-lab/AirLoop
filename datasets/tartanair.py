@@ -67,7 +67,7 @@ class TartanAir(Dataset):
         depth = F.to_pil_image(np.load(self.depth[seq][frame]), mode='F')
         pose = self.poses[seq][frame]
         image, K, depth = self.augment(image, self.K, depth)
-        return image, depth, pose, K, seq.split(os.path.sep)[-3]
+        return image, depth, pose, K, seq.split(os.path.sep)[-3:]
 
     def rand_split(self, ratio, seed=42):
         total, ratio = len(self.sequences), np.array(ratio)

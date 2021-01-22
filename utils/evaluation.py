@@ -17,12 +17,18 @@ class MatchEvaluator():
         self.error = {b: [] for b in back}
         self.writer = writer
         self.n_iter = 0
+        self.cur_env = None
 
     @torch.no_grad()
-    def observe(self, descriptors, points, scores, score_map, depth_map, poses, Ks, imgs):
+    def observe(self, descriptors, points, scores, score_map, depth_map, poses, Ks, imgs, env_seq):
         B, N, _ = points.shape
         _, _, H, W = imgs.shape
         top = N if self.top is None else self.top
+
+        env_seq = "_".join(zip(*env_seq).__next__())
+        if self.cur_env != env_seq:
+            self.cur_env = env_seq
+            self.hist = []
 
         # populate hist until sufficient
         depths = self.grid_sample((depth_map, points)).squeeze(-1)

@@ -30,13 +30,13 @@ from datasets import TartanAir, TartanAirTest, AirAugment
 @torch.no_grad()
 def evaluate(net, evaluator, loader, args):
     net.eval()
-    for images, depths, poses, K, env in tqdm.tqdm(loader):
+    for images, depths, poses, K, env_seq in tqdm.tqdm(loader):
         images = images.to(args.device)
         depths = depths.to(args.device)
         poses = poses.to(args.device)
         K = K.to(args.device)
         descriptors, points, pointness, scores = net(images)
-        evaluator.observe(descriptors, points, scores, pointness, depths, poses, K, images)
+        evaluator.observe(descriptors, points, scores, pointness, depths, poses, K, images, env_seq)
 
     evaluator.report(args.eval_freq)
 
@@ -63,14 +63,14 @@ def train(net, loader, criterion, optimizer, args=None, loss_ave=50, eval_loader
     net.train()
     train_loss, batches = deque(), len(loader)
     enumerator, idx = tqdm.tqdm(loader), 0
-    for images, depths, poses, K, env in enumerator:
+    for images, depths, poses, K, env_seq in enumerator:
         images = images.to(args.device)
         depths = depths.to(args.device)
         poses = poses.to(args.device)
         K = K.to(args.device)
         optimizer.zero_grad()
         descriptors, points, pointness, scores = net(images)
-        loss = criterion(descriptors, points, scores, pointness, depths, poses, K, images, env)
+        loss = criterion(descriptors, points, scores, pointness, depths, poses, K, images, env_seq[0])
         loss.backward()
         optimizer.step()
 
