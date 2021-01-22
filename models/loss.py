@@ -12,15 +12,16 @@ from utils import Visualizer
 from models.memory import Memory
 from models.featurenet import GridSample
 from models.BAnet import ConsecutiveMatch
+from models.tool import GlobalStepCounter
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 1, 1, 10], K=None, debug=False, writer=None, viz_start=float('inf'), viz_freq=200):
+    def __init__(self, beta=[1, 1, 1, 10], K=None, writer=None, viz_start=float('inf'), viz_freq=200, counter=None):
         super().__init__()
-        self.writer, self.beta, self.n_iter = writer, beta, 0
-        self.score_corner = ScoreLoss(debug=debug)
+        self.writer, self.beta, self.counter = writer, beta, counter if counter is not None else GlobalStepCounter()
+        self.score_corner = ScoreLoss()
         self.desc_dist = DiscriptorDistinctionLoss()
-        self.desc_match = DiscriptorMatchLoss(writer=writer)
-        self.desc_ret = DiscriptorRententionLoss(writer=writer)
+        self.desc_match = DiscriptorMatchLoss(writer=writer, counter=self.counter)
+        self.desc_ret = DiscriptorRententionLoss(writer=writer, counter=self.counter)
         self.projector = Projector()
         self.viz = Visualizer() if self.writer is None else Visualizer('tensorboard', writer=self.writer)
         self.viz_start, self.viz_freq = viz_start, viz_freq
@@ -37,52 +38,41 @@ class FeatureNetLoss(nn.Module):
         retention = self.beta[3] * self.desc_ret(points, depth_map, poses, K, descriptors, env[0])
         loss = distinction + cornerness + match + retention
 
+        n_iter = self.counter.steps
         if self.writer is not None:
             self.writer.add_scalars('Loss', {'distinction': distinction,
                                              'cornerness': cornerness,
                                              'match': match,
                                              'retention': retention,
-                                             'all': loss}, self.n_iter)
+                                             'all': loss}, n_iter)
 
-        if self.n_iter >= self.viz_start and self.n_iter % self.viz_freq == 0:
-            self.viz.show(imgs, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='train', step=self.n_iter)
+        if n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
+            self.viz.show(imgs, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='train', step=n_iter)
 
-            self.viz.show(score_map, color='hot', vmax=0.01, name='score', step=self.n_iter)
+            self.viz.show(score_map, color='hot', name='score', step=n_iter)
 
             pair = torch.tensor([[0, 1], [0, 3], [0, 5], [0, 7]])
             b_src, b_dst = pair[:, 0], pair[:, 1]
             matched, confidence = ConsecutiveMatch()(descriptors[b_src], descriptors[b_dst], points[b_dst])
             top_conf, top_idx = confidence.topk(50, dim=1)
             top_conf, top_idx = top_conf.detach().cpu().numpy(), top_idx.unsqueeze(-1).repeat(1, 1, 2)
-            self.viz.showmatch(imgs[b_src], points[b_src].gather(1, top_idx), imgs[b_dst], matched.gather(1, top_idx), 'hot', top_conf, 0.9, 1, name='match', step=self.n_iter)
+            self.viz.showmatch(imgs[b_src], points[b_src].gather(1, top_idx), imgs[b_dst], matched.gather(1, top_idx), 'hot', top_conf, 0.9, 1, name='match', step=n_iter)
 
-        self.n_iter += 1
         return loss
 
 
 class ScoreLoss(nn.Module):
-    def __init__(self, radius=8, num_corners=500, debug=False):
+    def __init__(self, radius=8, num_corners=500):
         super(ScoreLoss, self).__init__()
         self.bceloss = nn.BCELoss()
         self.corner_det = kf.CornerGFTT()
         self.num_corners = num_corners
         self.pool = nn.MaxPool2d(kernel_size=radius, return_indices=True)
         self.unpool = nn.MaxUnpool2d(kernel_size=radius)
-        self.debug = Visualizer(default_name='corners') if debug else debug
 
     def forward(self, scores_dense, imgs, projector):
         corners = self.get_corners(imgs, projector)
         lap = kn.filters.laplacian(scores_dense, 5) # smoothness
-
-        if self.debug:
-            _B = corners.shape[0]
-            _coords = corners.squeeze().nonzero(as_tuple=False)
-            _pts_list = [_coords[_coords[:, 0] == i][:, [2, 1]] for i in range(_B)]
-            _pts = torch.ones(_B, max([p.shape[0] for p in _pts_list]), 2) * -2
-            for i, p in enumerate(_pts_list):
-                _pts[i, :len(p)] = p
-            _pts = C.normalize_pixel_coordinates(_pts, imgs.shape[2], imgs.shape[3])
-            self.debug.show(imgs, _pts)
 
         return self.bceloss(scores_dense, corners) + (scores_dense * torch.exp(-lap)).mean() * 10
 
@@ -134,13 +124,13 @@ class DiscriptorDistinctionLoss(nn.Module):
 
 
 class DiscriptorRententionLoss(nn.Module):
-    def __init__(self, writer=None):
+    def __init__(self, writer=None, counter=None):
         super().__init__()
         self.writer = writer
         self.memory = {}
         self.projector = Projector()
         self.cosine = nn.CosineSimilarity(dim=-1)
-        self.n_iter = 0
+        self.counter = counter if counter is not None else GlobalStepCounter()
 
     def forward(self, points, depth_map, pose, K, descriptors, env):
         if env not in self.memory:
@@ -154,18 +144,17 @@ class DiscriptorRententionLoss(nn.Module):
         matched_desc, n_match = memory.write(valid_pts, valid_desc, match_count=True)
 
         if self.writer is not None:
-            self.n_iter += 1
             self.writer.add_scalars('Misc/DiscriptorRentention', {
                 'n_match': n_match
-            }, self.n_iter)
+            }, self.counter.steps)
 
         return 1 - self.cosine(valid_desc, matched_desc).mean()
 
 
 class DiscriptorMatchLoss(nn.Module):
-    def __init__(self, radius=1, writer=None):
+    def __init__(self, radius=1, writer=None, counter=None):
         super(DiscriptorMatchLoss, self).__init__()
-        self.radius, self.writer, self.n_iter = radius, writer, 0
+        self.radius, self.writer, self.counter = radius, writer, counter if counter is not None else GlobalStepCounter()
         self.cosine = PairwiseCosine(inter_batch=True)
 
     def forward(self, descriptors, pts_src, pts_dst, invis_idx, height, width):
@@ -180,11 +169,11 @@ class DiscriptorMatchLoss(nn.Module):
         miss = (dist > self.radius).triu(diagonal=1)
 
         if self.writer is not None:
-            self.n_iter += 1
-            self.writer.add_scalars('Misc/DiscriptorMatch', {
+            n_iter = self.counter.steps
+            self.writer.add_scalars('Misc/DiscriptorMatch/Count', {
                 'n_match': match.sum(),
                 'n_miss': miss.sum(),
-            }, self.n_iter)
+            }, n_iter)
 
         return (1 - pcos[match].mean()) + pcos[miss].mean()
 

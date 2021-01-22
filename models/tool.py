@@ -4,6 +4,19 @@ import time
 import torch
 
 
+class GlobalStepCounter():
+    def __init__(self, initial_step=0):
+        self._steps = initial_step
+
+    @property
+    def steps(self):
+        return self._steps
+
+    def step(self, step=1):
+        self._steps += 1
+        return self._steps
+
+
 class Timer:
     def __init__(self):
         torch.cuda.synchronize()

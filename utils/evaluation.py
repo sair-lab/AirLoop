@@ -8,7 +8,7 @@ from prettytable import PrettyTable
 
 
 class MatchEvaluator():
-    def __init__(self, back=[1], viz=None, viz_dist_min=0, viz_dist_max=100, top=None, writer=None):
+    def __init__(self, back=[1], viz=None, viz_dist_min=0, viz_dist_max=100, top=None, writer=None, counter=None):
         self.back, self.top = back, top
         self.viz, self.viz_min, self.viz_max = viz, viz_dist_min, viz_dist_max
         self.hist = []
@@ -16,7 +16,7 @@ class MatchEvaluator():
         self.match = ConsecutiveMatch()
         self.error = {b: [] for b in back}
         self.writer = writer
-        self.n_iter = 0
+        self.counter = counter if counter is not None else GlobalStepCounter()
         self.cur_env = None
         self.env_err_seg = {}
 
@@ -87,10 +87,10 @@ class MatchEvaluator():
             perc[b] = (torch.cat(self.error[b][seg[0]:seg[1]]) < 1).to(torch.float).mean().item()
         return perc
 
-    def report(self, d):
+    def report(self):
         mean, _90_perc = self.ave_reproj_error(quantile=0.9)
         prec = self.ave_prec()
-        self.n_iter += d
+        n_iter = self.counter.steps
 
         # print-out
         result = PrettyTable(['env', 'n-back', 'Mean Err (90%)', 'Ave Prec'])
@@ -100,17 +100,17 @@ class MatchEvaluator():
             env_prec = self.ave_prec(env=e)
             result.add_rows([[e, b, '%.2f (%.2f)' % (env_mean[b], env_90_perc[b]), env_prec[b]] for b in self.back])
         result.add_rows([['All', b, '%.2f (%.2f)' % (mean[b], _90_perc[b]), prec[b]] for b in self.back])
-        print('Evaluation: step %d' % self.n_iter)
+        print('Evaluation: step %d' % n_iter)
         print(result.get_string(sortby='n-back'))
 
         # summary writer
         if self.writer is not None:
             self.writer: torch.utils.tensorboard.SummaryWriter
-            self.writer.add_scalars('Eval/Match/MeanErr', {'%d-back' % b: v for b, v in mean.items()}, self.n_iter)
-            self.writer.add_scalars('Eval/Match/AP', {'%d-back' % b: v for b, v in prec.items()}, self.n_iter)
+            self.writer.add_scalars('Eval/Match/MeanErr', {'%d-back' % b: v for b, v in mean.items()}, n_iter)
+            self.writer.add_scalars('Eval/Match/AP', {'%d-back' % b: v for b, v in prec.items()}, n_iter)
             for b in self.back:
                 self.writer.add_histogram('Eval/Match/LogErr/%d-back' % b,
-                                          torch.log10(torch.cat(self.error[b]).clamp(min=1e-10)), self.n_iter)
+                                          torch.log10(torch.cat(self.error[b]).clamp(min=1e-10)), n_iter)
 
         self.error = {b: [] for b in self.back}
         self.hist = []
