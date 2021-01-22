@@ -18,6 +18,7 @@ class MatchEvaluator():
         self.writer = writer
         self.n_iter = 0
         self.cur_env = None
+        self.env_err_seg = {}
 
     @torch.no_grad()
     def observe(self, descriptors, points, scores, score_map, depth_map, poses, Ks, imgs, env_seq):
@@ -27,8 +28,12 @@ class MatchEvaluator():
 
         env_seq = "_".join(zip(*env_seq).__next__())
         if self.cur_env != env_seq:
-            self.cur_env = env_seq
+            last_env, self.cur_env = self.cur_env, env_seq
             self.hist = []
+            n_batches = len(self.error[self.back[0]])
+            self.env_err_seg[self.cur_env] = [n_batches, -1]
+            if last_env is not None:
+                self.env_err_seg[last_env][1] = n_batches
 
         # populate hist until sufficient
         depths = self.grid_sample((depth_map, points)).squeeze(-1)
@@ -65,27 +70,36 @@ class MatchEvaluator():
 
         return self.error
 
-    def ave_reproj_error(self, quantile=None):
+    def ave_reproj_error(self, quantile=None, env=None):
         mean, quantiles = {}, {}
         for b in self.back:
-            error = torch.cat(self.error[b])
+            seg = self.env_err_seg[env] if env is not None else [0, -1]
+            error = torch.cat(self.error[b][seg[0]:seg[1]])
             mean[b] = error.mean().item()
             if quantile is not None:
                 quantiles[b] = torch.quantile(error, torch.tensor(quantile).to(error)).tolist()
         return (mean, quantiles) if quantile is not None else mean
 
-    def ave_prec(self, thresh=1):
-        return {b: (torch.cat(self.error[b]) < 1).to(torch.float).mean().item() for b in self.back}
+    def ave_prec(self, thresh=1, env=None):
+        perc = {}
+        for b in self.back:
+            seg = self.env_err_seg[env] if env is not None else [0, -1]
+            perc[b] = (torch.cat(self.error[b][seg[0]:seg[1]]) < 1).to(torch.float).mean().item()
+        return perc
 
     def report(self, d):
-        mean, _90_perc = self.ave_reproj_error(0.9)
+        mean, _90_perc = self.ave_reproj_error(quantile=0.9)
         prec = self.ave_prec()
         self.n_iter += d
 
         # print-out
-        result = PrettyTable(['n-back', 'Mean Err (90%)', 'Ave Prec'])
+        result = PrettyTable(['env', 'n-back', 'Mean Err (90%)', 'Ave Prec'])
         result.float_format['Ave Prec'] = '.2'
-        result.add_rows([[b, '%.2f (%.2f)' % (mean[b], _90_perc[b]), prec[b]] for b in self.back])
+        for e in self.env_err_seg:
+            env_mean, env_90_perc = self.ave_reproj_error(quantile=0.9, env=e)
+            env_prec = self.ave_prec(env=e)
+            result.add_rows([[e, b, '%.2f (%.2f)' % (env_mean[b], env_90_perc[b]), env_prec[b]] for b in self.back])
+        result.add_rows([['All', b, '%.2f (%.2f)' % (mean[b], _90_perc[b]), prec[b]] for b in self.back])
         print('Evaluation: step %d' % self.n_iter)
         print(result.get_string(sortby='n-back'))
 
