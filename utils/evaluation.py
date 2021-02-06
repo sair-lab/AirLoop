@@ -1,10 +1,12 @@
-import torch.nn as nn
 import torch
+import numpy as np
+import pickle, bz2
+import torch.nn as nn
 from collections import deque
-import kornia.geometry.conversions as C
 from .geometry import Projector
+import kornia.geometry.conversions as C
+from prettytable import PrettyTable, MARKDOWN
 from models import ConsecutiveMatch, GridSample
-from prettytable import PrettyTable
 
 
 class MatchEvaluator():
@@ -87,33 +89,46 @@ class MatchEvaluator():
             perc[b] = (torch.cat(self.error[b][seg[0]:seg[1]]) < 1).to(torch.float).mean().item()
         return perc
 
-    def report(self):
-        mean, _90_perc = self.ave_reproj_error(quantile=0.9)
-        prec = self.ave_prec()
-        n_iter = self.counter.steps
-
-        # print-out
-        result = PrettyTable(['env', 'n-back', 'Mean Err (90%)', 'Ave Prec'])
+    def report(self, err_quant=[0.5, 0.9]):
+        result = PrettyTable(['Env Name', 'n-back',
+                              'Mean Err (%s)' % self._fmt_list(np.array(err_quant) * 100, '%d%%'), 'Ave Prec'])
         result.float_format['Ave Prec'] = '.2'
-        for e in self.env_err_seg:
-            env_mean, env_90_perc = self.ave_reproj_error(quantile=0.9, env=e)
-            env_prec = self.ave_prec(env=e)
-            result.add_rows([[e, b, '%.2f (%.2f)' % (env_mean[b], env_90_perc[b]), env_prec[b]] for b in self.back])
-        result.add_rows([['All', b, '%.2f (%.2f)' % (mean[b], _90_perc[b]), prec[b]] for b in self.back])
-        print('Evaluation: step %d' % n_iter)
-        print(result.get_string(sortby='n-back'))
+        result.align['Env Name'] = 'r'
 
-        # summary writer
+        all_mean, all_quantiles = self.ave_reproj_error(quantile=err_quant)
+        prec = self.ave_prec()
+        result.add_rows([['All', b, '%.2f (%s)' % (all_mean[b], self._fmt_list(all_quantiles[b], '%.2f')),
+                          prec[b]] for b in self.back])
+
+        for e in self.env_err_seg:
+            env_mean, env_quantiles = self.ave_reproj_error(quantile=err_quant, env=e)
+            env_prec = self.ave_prec(env=e)
+            result.add_rows([[e, b, '%.2f (%s)' % (env_mean[b], self._fmt_list(env_quantiles[b], '%.2f')),
+                              env_prec[b]] for b in self.back])
+
+        n_iter = self.counter.steps
         if self.writer is not None:
-            self.writer: torch.utils.tensorboard.SummaryWriter
-            self.writer.add_scalars('Eval/Match/MeanErr', {'%d-back' % b: v for b, v in mean.items()}, n_iter)
-            self.writer.add_scalars('Eval/Match/AP', {'%d-back' % b: v for b, v in prec.items()}, n_iter)
+            self.writer.add_scalars('Eval/Match/MeanErr', {'%d-back' % b: v for b, v in all_mean.items()}, n_iter)
+            self.writer.add_scalars('Eval/Match/AvePrec', {'%d-back' % b: v for b, v in prec.items()}, n_iter)
             for b in self.back:
                 self.writer.add_histogram('Eval/Match/LogErr/%d-back' % b,
                                           torch.log10(torch.cat(self.error[b]).clamp(min=1e-10)), n_iter)
+            # TensorBoard supports markdown table although column alignment is broken
+            result.set_style(MARKDOWN)
+            self.writer.add_text('Eval/Match/PerSeq', result.get_string(sortby='n-back'), n_iter)
+        else:
+            print('Evaluation: step %d' % n_iter)
+            print(result.get_string(sortby='n-back'))
 
+        # clear history
         self.error = {b: [] for b in self.back}
         self.hist = []
+        self.cur_env = None
+        self.env_err_seg = {}
+
+    @staticmethod
+    def _fmt_list(elems, fmt, delim=', '):
+        return delim.join([fmt % e for e in elems])
 
     @staticmethod
     def _unpack_hist(hist):
@@ -123,6 +138,11 @@ class MatchEvaluator():
     def _point_select(attr, idx):
         B, N = idx.shape
         return attr.gather(1, idx.view(B, N, *([1] * (len(attr.shape) - 2))).expand(B, N, *attr.shape[2:]))
+
+    def save_error(self, file_path):
+        error = {k: [v.detach().cpu().numpy() for v in vs] for k, vs in self.error.items()}
+        with bz2.BZ2File(file_path, 'wb') as f:
+            pickle.dump([error, self.env_err_seg], f)
 
 
 def reproj_error(pts_src, K_src, pose_src, depth_src, pts_dst, K_dst, pose_dst, H, W):

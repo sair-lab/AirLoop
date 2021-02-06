@@ -15,11 +15,10 @@ from models.BAnet import ConsecutiveMatch
 from models.tool import GlobalStepCounter
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 1, 1, 10], K=None, writer=None, viz_start=float('inf'), viz_freq=200, counter=None):
+    def __init__(self, beta=[1, 1, 10], K=None, writer=None, viz_start=float('inf'), viz_freq=200, counter=None):
         super().__init__()
         self.writer, self.beta, self.counter = writer, beta, counter if counter is not None else GlobalStepCounter()
         self.score_corner = ScoreLoss()
-        self.desc_dist = DiscriptorDistinctionLoss()
         self.desc_match = DiscriptorMatchLoss(writer=writer, counter=self.counter)
         self.desc_ret = DiscriptorRententionLoss(writer=writer, counter=self.counter)
         self.projector = Projector()
@@ -32,16 +31,14 @@ class FeatureNetLoss(nn.Module):
 
         H, W = score_map.size(2), score_map.size(3)
         cornerness = self.beta[0] * self.score_corner(score_map, imgs, batch_project)
-        distinction = self.beta[1] * self.desc_dist(descriptors)
         proj_pts, invis_idx = batch_project(points)
-        match = self.beta[2] * self.desc_match(descriptors, points.unsqueeze(0), proj_pts, invis_idx, H, W)
-        retention = self.beta[3] * self.desc_ret(points, depth_map, poses, K, descriptors, env[0])
-        loss = distinction + cornerness + match + retention
+        match = self.beta[1] * self.desc_match(descriptors, scores, points.unsqueeze(0), proj_pts, invis_idx, H, W)
+        retention = self.beta[2] * self.desc_ret(points, depth_map, poses, K, descriptors, env[0])
+        loss = cornerness + match + retention
 
         n_iter = self.counter.steps
         if self.writer is not None:
-            self.writer.add_scalars('Loss', {'distinction': distinction,
-                                             'cornerness': cornerness,
+            self.writer.add_scalars('Loss', {'cornerness': cornerness,
                                              'match': match,
                                              'retention': retention,
                                              'all': loss}, n_iter)
@@ -72,6 +69,7 @@ class ScoreLoss(nn.Module):
 
     def forward(self, scores_dense, imgs, projector):
         corners = self.get_corners(imgs, projector)
+        corners = kn.filters.gaussian_blur2d(corners, kernel_size=(7, 7), sigma=(1, 1))
         lap = kn.filters.laplacian(scores_dense, 5) # smoothness
 
         return self.bceloss(scores_dense, corners) + (scores_dense * torch.exp(-lap)).mean() * 10
@@ -112,17 +110,6 @@ class ScoreLoss(nn.Module):
         return (target > 0).to(target)
 
 
-class DiscriptorDistinctionLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.relu = nn.ReLU()
-        self.cosine = PairwiseCosine(inter_batch=False)
-
-    def forward(self, descriptors):
-        pcos = self.cosine(descriptors, descriptors)
-        return self.relu(pcos).mean()
-
-
 class DiscriptorRententionLoss(nn.Module):
     def __init__(self, writer=None, counter=None):
         super().__init__()
@@ -152,12 +139,13 @@ class DiscriptorRententionLoss(nn.Module):
 
 
 class DiscriptorMatchLoss(nn.Module):
+    eps = 1e-6
     def __init__(self, radius=1, writer=None, counter=None):
         super(DiscriptorMatchLoss, self).__init__()
         self.radius, self.writer, self.counter = radius, writer, counter if counter is not None else GlobalStepCounter()
         self.cosine = PairwiseCosine(inter_batch=True)
 
-    def forward(self, descriptors, pts_src, pts_dst, invis_idx, height, width):
+    def forward(self, descriptors, scores, pts_src, pts_dst, invis_idx, height, width):
         pts_src = C.denormalize_pixel_coordinates(pts_src.detach(), height, width)
         pts_dst = C.denormalize_pixel_coordinates(pts_dst.detach(), height, width)
 
@@ -168,6 +156,16 @@ class DiscriptorMatchLoss(nn.Module):
         match = (dist <= self.radius).triu(diagonal=1)
         miss = (dist > self.radius).triu(diagonal=1)
 
+        scores = scores.detach()
+        score_ave = (scores[:, None, :, None] + scores[None, :, None, :]).clamp(min=self.eps) / 2
+        pcos = self.cosine(descriptors, descriptors)
+
+        sig_match = -torch.log(score_ave[match])
+        sig_miss  = -torch.log(score_ave[miss])
+
+        s_match = pcos[match]
+        s_miss = pcos[miss]
+
         if self.writer is not None:
             n_iter = self.counter.steps
             self.writer.add_scalars('Misc/DiscriptorMatch/Count', {
@@ -175,7 +173,17 @@ class DiscriptorMatchLoss(nn.Module):
                 'n_miss': miss.sum(),
             }, n_iter)
 
-        return (1 - pcos[match].mean()) + pcos[miss].mean()
+            if len(sig_match) > 0:
+                self.writer.add_histogram('Misc/DiscriptorMatch/Sim/match', s_match, n_iter)
+                self.writer.add_histogram('Misc/DiscriptorMatch/Sim/miss', s_miss[:len(s_match)], n_iter)
+
+        return self.nll(sig_match, s_match) + self.nll(sig_miss, s_miss, False, match.sum() * 2)
+
+    def nll(self, sig, cos, match=True, topk=None):
+        # p(x) = exp(-l / sig) * C; l = 1 - x if match else x
+        norm_const = torch.log(sig * (1 - torch.exp(-1 / sig)))
+        loss = (1 - cos if match else cos) / sig + norm_const
+        return (loss if topk is None else loss.topk(topk).values).mean()
 
 
 class PairwiseCosine(nn.Module):

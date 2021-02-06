@@ -59,19 +59,18 @@ class PixelUnshuffle(nn.Module):
 
 
 class GraphAttn(nn.Module):
-    def __init__(self, in_features, out_features, alpha, dropout=0.5, beta=0.2):
+    def __init__(self, in_features, out_features, alpha=0.9, beta=0.2):
         super().__init__()
         self.alpha = alpha
-        self.tran = nn.Linear(in_features, out_features, bias=False)
-        self.att1 = nn.Linear(out_features, 1, bias=False)
-        self.att2 = nn.Linear(out_features, 1, bias=False)
-        self.norm = nn.Sequential(nn.Softmax(dim=-1), nn.Dropout(dropout))
-        self.leakyrelu = nn.LeakyReLU(beta)
+        self.tran = nn.Linear(in_features, out_features)
+        self.att1 = nn.Linear(out_features, 1)
+        self.att2 = nn.Linear(out_features, 1)
+        self.actv = nn.Sequential(nn.LeakyReLU(beta), nn.Softmax(dim=-1))
 
     def forward(self, x):
         h = self.tran(x)
         att = self.att1(h) + self.att2(h).permute(0, 2, 1)
-        adj = self.norm(self.leakyrelu(att.squeeze()))
+        adj = self.actv(att.squeeze())
         return self.alpha * h + (1-self.alpha) * adj @ h
 
 
@@ -110,7 +109,6 @@ class DescriptorHead(nn.Module):
             make_layer(256, self.feat_dim),
             make_layer(self.feat_dim, self.feat_dim, bn=None, activation=None))
         self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
-        self.encoder = nn.Sequential(nn.Linear(3, 256), nn.ReLU(), nn.Linear(256, self.feat_dim))
         self.residual = nn.Sequential(make_layer(3, 128, kernel_size=9, padding=4), make_layer(128, self.feat_dim))
 
     def forward(self, images, features, points, scores):
@@ -118,7 +116,6 @@ class DescriptorHead(nn.Module):
         n_group = 1 + self.sample_pass if self.training else 1
         descriptors, residual = _repeat_flatten(descriptors, n_group), _repeat_flatten(residual, n_group)
         descriptors = self.sample((descriptors, points)) + self.sample((residual, points))
-        descriptors = descriptors + self.encoder(torch.cat([points, scores], dim=-1))
         return descriptors
 
 
@@ -134,8 +131,9 @@ class FeatureNet(models.VGG):
         self.scores = ScoreHead(8)
         self.descriptors = DescriptorHead(feat_dim, feat_num, sample_pass)
         self.graph = nn.Sequential(
-            GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9), nn.ReLU(),
-            GraphAttn(self.feat_dim, self.feat_dim, alpha=0.9))
+            GraphAttn(self.feat_dim, self.feat_dim),
+            nn.BatchNorm1d(feat_num), nn.LeakyReLU(0.2),
+            GraphAttn(self.feat_dim, self.feat_dim))
         self.nms = nms.NonMaximaSuppression2d((5, 5))
 
     def forward(self, inputs):

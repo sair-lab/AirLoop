@@ -154,6 +154,8 @@ if __name__ == "__main__":
     step_counter = GlobalStepCounter(initial_step=1)
     criterion = FeatureNetLoss(writer=writer, viz_start=args.viz_start, viz_freq=args.viz_freq, counter=step_counter)
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
+    if not isinstance(net, nn.DataParallel):
+        net = nn.DataParallel(net)
     optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
 
