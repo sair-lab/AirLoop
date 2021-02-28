@@ -134,9 +134,9 @@ if __name__ == "__main__":
     eval_data.augment = AirAugment(args.scale, resize_only=True)
     test_data = TartanAirTest(args.test_root, args.scale, catalog_path=args.test_catalog)
 
-    train_sampler = AirSampler(train_data, args.batch_size, shuffle=True)
-    eval_sampler = AirSampler(eval_data, args.batch_size, shuffle=False, overlap=False)
-    test_sampler = AirSampler(test_data, args.batch_size, shuffle=False)
+    train_sampler = AirSampler(train_data, args.batch_size, shuffle='all', overlap=True)
+    eval_sampler = AirSampler(eval_data, args.batch_size, shuffle='none', overlap=False)
+    test_sampler = AirSampler(test_data, args.batch_size, shuffle='none')
 
     train_loader = DataLoader(train_data, batch_sampler=train_sampler, pin_memory=True, num_workers=args.num_workers)
     eval_loader = DataLoader(eval_data, batch_sampler=eval_sampler, pin_memory=True, num_workers=args.num_workers)
@@ -148,7 +148,7 @@ if __name__ == "__main__":
         current_time = datetime.now().strftime('%b%d_%H-%M-%S')
         writer = SummaryWriter(os.path.join(args.log_dir, current_time))
         tb = program.TensorBoard()
-        tb.configure(argv=[None, '--logdir', args.log_dir, '--bind_all'])
+        tb.configure(argv=[None, '--logdir', args.log_dir, '--bind_all', '--samples_per_plugin=images=50'])
         print(('TensorBoard at %s \n' % tb.launch()))
 
     step_counter = GlobalStepCounter(initial_step=1)

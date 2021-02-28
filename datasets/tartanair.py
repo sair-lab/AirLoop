@@ -119,15 +119,15 @@ class TartanAirTest(Dataset):
 
 
 class AirSampler(Sampler):
-    def __init__(self, data, batch_size, shuffle=True, overlap=True):
-        self.data_sizes = data.sizes
+    def __init__(self, data, batch_size, shuffle='all', overlap=True):
+        self.seq_sizes = [(seq_id, size) for seq_id, size in enumerate(data.sizes)]
+        if shuffle == 'seq': np.random.shuffle(self.seq_sizes)
         self.bs = batch_size
-        self.shuffle = shuffle
         self.batches = []
-        for i, size in enumerate(self.data_sizes):
+        for seq_id, size in self.seq_sizes:
             b_start = np.arange(0, size - self.bs, 1 if overlap else self.bs)
-            self.batches += [list(zip([i]*self.bs, range(st, st+self.bs))) for st in b_start]
-        if self.shuffle: np.random.shuffle(self.batches)
+            self.batches += [list(zip([seq_id]*self.bs, range(st, st+self.bs))) for st in b_start]
+        if shuffle == 'all': np.random.shuffle(self.batches)
 
     def __iter__(self):
         return iter(self.batches)
