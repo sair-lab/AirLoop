@@ -49,6 +49,11 @@ class Projector(nn.Module):
         depths = self._sample_depths(depth_map, points)
         return self._pix2world(points, depths, cam)
 
+    def world2pix(self, points, res, poses, Ks):
+        """Projects 3D coordinates to screen."""
+        cam = self._make_camera(res[0], res[1], Ks, poses)
+        return self._world2pix(points, cam)
+
     @staticmethod
     def _make_camera(height, width, K, pose):
         """Creates a PinholeCamera with specified intrinsics and extrinsics."""

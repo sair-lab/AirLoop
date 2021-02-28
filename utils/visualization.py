@@ -49,7 +49,7 @@ class Visualizer():
             for i, img in enumerate(images):
                 self.displayer.display(disp_name + str(i), img, step)
 
-    def showmatch(self, imges1, points1, images2, points2, color='blue', values=None, vmin=None, vmax=None, name=None, step=0):
+    def showmatch(self, imges1, points1, images2, points2, color='blue', values=None, vmin=None, vmax=None, name=None, step=0, nrow=2):
         match_pairs = []
         for i, (img1, pts1, img2, pts2) in enumerate(zip(imges1, points1, images2, points2)):
             assert len(pts1) == len(pts2)
@@ -61,7 +61,7 @@ class Visualizer():
             match_pairs.append(torch.tensor(matches(img1, pts1, img2, pts2, colors)))
 
         images = torch.stack(match_pairs).permute((0, 3, 1, 2))
-        grid = torchvision.utils.make_grid(images, nrow=2, padding=1).permute((1, 2, 0))
+        grid = torchvision.utils.make_grid(images, nrow=nrow, padding=1).permute((1, 2, 0))
         self.displayer.display(name if name is not None else self.default_name, grid.numpy(), step)
 
     def reprojectshow(self, imgs, pts_src, pts_dst, src, dst):
