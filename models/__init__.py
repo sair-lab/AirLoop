@@ -7,5 +7,5 @@ from .tool import EarlyStopScheduler
 
 from .BAnet import ConsecutiveMatch
 
-from .featurenet import FeatureNet, GridSample
+from .featurenet import FeatureNet, GridSample, GDNet
 from .loss import FeatureNetLoss, PairwiseCosine

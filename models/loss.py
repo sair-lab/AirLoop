@@ -9,12 +9,12 @@ import kornia.feature as kf
 import torch.nn.functional as F
 import kornia.geometry.conversions as C
 
-from utils import Projector
 from utils import Visualizer
 from models.memory import Memory
 from models.featurenet import GridSample
 from models.BAnet import ConsecutiveMatch
 from models.tool import GlobalStepCounter
+from utils import Projector, src_repeat, dst_repeat
 
 
 class FeatureNetLoss(nn.Module):
@@ -25,27 +25,14 @@ class FeatureNetLoss(nn.Module):
         self.viz_start, self.viz_freq = viz_start, viz_freq
         self.score_corner = ScoreLoss()
         self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.desc_ret = DiscriptorRententionLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.gd_match = GlobalDescMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.projector = Projector()
 
-    def forward(self, descriptors, points, scores, score_map, depth_map, poses, K, imgs, env):
+    def forward(self, net, gd, descriptors, points, scores, score_map, depth_map, poses, K, imgs, env):
         def batch_project(pts):
             return self.projector.cartesian(pts, depth_map, poses, K)
 
-        H, W = score_map.size(2), score_map.size(3)
-        cornerness = self.beta[0] * self.score_corner(score_map, imgs, batch_project)
-        proj_pts, invis_idx = batch_project(points)
-        match = self.beta[1] * self.desc_match(imgs, descriptors, scores, points.unsqueeze(0), proj_pts, invis_idx, H, W)
-        retention = self.beta[2] * self.desc_ret(imgs, points, depth_map, poses, K, descriptors, env[0])
-        loss = cornerness + match + retention
-
         n_iter = self.counter.steps
-        if self.writer is not None:
-            self.writer.add_scalars('Loss', {'cornerness': cornerness,
-                                             'match': match,
-                                             'retention': retention,
-                                             'all': loss}, n_iter)
-
         if n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
             self.viz.show(imgs, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='train', step=n_iter)
 
@@ -57,6 +44,22 @@ class FeatureNetLoss(nn.Module):
             top_conf, top_idx = confidence.topk(50, dim=1)
             top_conf, top_idx = top_conf.detach().cpu().numpy(), top_idx.unsqueeze(-1).repeat(1, 1, 2)
             self.viz.showmatch(imgs[b_src], points[b_src].gather(1, top_idx), imgs[b_dst], matched.gather(1, top_idx), 'hot', top_conf, 0.9, 1, name='match', step=n_iter)
+
+        H, W = score_map.size(2), score_map.size(3)
+        # don't use random proposal when calculating gd
+        rand_end = -points.shape[1] // (net.module.sample_pass + 1)
+        cornerness = self.beta[0] * self.score_corner(score_map, imgs, batch_project)
+        proj_pts, invis_idx = batch_project(points)
+        match = self.beta[1] * self.desc_match(imgs, descriptors, scores, points.unsqueeze(0), proj_pts, invis_idx, H, W)
+        gd_match = self.beta[2] * self.gd_match(net, imgs, gd, points[:, rand_end:], depth_map, poses, K, descriptors[:, rand_end:], env[0])
+        loss = cornerness + match + gd_match
+
+        n_iter = self.counter.steps
+        if self.writer is not None:
+            self.writer.add_scalars('Loss', {'cornerness': cornerness,
+                                             'match': match,
+                                             'global': gd_match,
+                                             'all': loss}, n_iter)
 
         return loss
 
@@ -113,86 +116,77 @@ class ScoreLoss(nn.Module):
         return (target > 0).to(target)
 
 
-class DiscriptorRententionLoss(nn.Module):
-    def __init__(self, writer=None, neighbor_rad=0.05, match_rad=0.5, swap_dir='./memory',
+class GlobalDescMatchLoss(nn.Module):
+    eps = 1e-2
+    logp_min = -50
+
+    def __init__(self, writer=None, sig=5, n_sample=8,
+                 D_point=256, D_frame=256, n_feature=250, swap_dir='./memory',
                  viz=None, viz_start=float('inf'), viz_freq=200, counter=None, debug=False):
         super().__init__()
         self.writer = writer
-        self.memory = None
+        self.memory = Memory(D_point, D_frame, n_feature, swap_dir)
         self.projector = Projector()
-        self.cosine = PairwiseCosine()
+        self.grid_sample = GridSample()
+        self.cosine = PairwiseCosine(inter_batch=True)
         self.counter = counter if counter is not None else GlobalStepCounter()
-        self.swap_dir = swap_dir
-        self.last_env = None
-        os.makedirs(self.swap_dir, exist_ok=True)
-        self.neighbor_rad = neighbor_rad
-        self.match_rad = match_rad
+        self.sig, self.n_sample, self.swap_dir = sig, n_sample, swap_dir
         self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq
         self.debug = debug
 
-    def forward(self, imgs, points, depth_map, pose, K, descriptors, env):
-        if env != self.last_env:
-            if self.memory is not None:
-                torch.save(self.memory, os.path.join(self.swap_dir, '%s.pth' % self.last_env))
-            load_path = os.path.join(self.swap_dir, '%s.pth' % env)
-            self.memory = torch.load(load_path) if os.path.isfile(load_path) else Memory().to(points)
-            self.last_env = env
+    def forward(self, net, imgs, gd, points, depth_map, pose, K, descriptors, env):
+        self.memory.swap(env)
 
-        key_points = points[0:1, points.shape[1] // 2:]
-        points_w = self.projector.pix2world(key_points, depth_map[0:1], pose[0:1], K[0:1])
-        mask = points_w.isfinite().all(dim=-1)
-        valid_pts, valid_pts_scr = points_w[mask], key_points[mask]
-        valid_desc = descriptors[0:1, points.shape[1] // 2:][mask] 
+        points_w = self.projector.pix2world(points, depth_map, pose, K)
 
-        H, W = depth_map.shape[2:]
-        mem_idx, mem_pts = self.memory.neighbor_search(valid_pts, self.neighbor_rad)
+        if len(self.memory) > 0:
+            B, _, H, W = depth_map.shape
+            _, mem_desc, mem_pos = self.memory.sample_frames(self.n_sample)
 
-        if mem_idx.numel() > 0:
-            # kornia functions are not compatible with empty tensors
-            mem_pts_scr = self.projector.world2pix(mem_pts, (H, W), pose[0:1], K[0:1])[0]
-            dist = torch.cdist(C.denormalize_pixel_coordinates(valid_pts_scr, H, W),
-                               C.denormalize_pixel_coordinates(mem_pts_scr, H, W))
-            mtch_pts_idx, _mtch_mem_idx = (dist < self.match_rad).nonzero(as_tuple=True)
-            # one valid point could be matched to a bunch of memory points
-            mtch_pts_idx, inv_idx = mtch_pts_idx.unique_consecutive(return_inverse=True)
+            # find where points from other frames land
+            mem_pts_scr, mem_pts_depth = self.projector.world2pix(src_repeat(mem_pos, B), (H, W),
+                dst_repeat(pose, self.n_sample), dst_repeat(K, self.n_sample))
+            mem_pts_scr_depth = self.grid_sample((dst_repeat(depth_map, self.n_sample), mem_pts_scr)).squeeze(-1)
+            mem_pts_scr[(mem_pts_depth > mem_pts_scr_depth + self.eps) | ((mem_pts_scr.abs() > 1).any(dim=-1))] = np.nan
+
+            dist = torch.cdist(C.denormalize_pixel_coordinates(dst_repeat(points, self.n_sample), H, W),
+                                C.denormalize_pixel_coordinates(mem_pts_scr, H, W))
+
+            norm_c = 1 / (2 * np.pi * self.sig)
+            logp_min = torch.tensor(self.logp_min).to(dist)
+            logp_joint = -dist ** 2 / (2 * self.sig ** 2)
+            logp_joint = logp_joint.where(logp_joint.isfinite(), logp_min).clamp(min=logp_min)
+            mut_info = (logp_joint.exp() / norm_c *
+                        (logp_joint - logp_joint.sum(dim=1, keepdim=True) - logp_joint.sum(dim=2, keepdim=True)
+                         - np.log(norm_c))).sum(dim=(1, 2))
+            mut_info = mut_info.reshape(self.n_sample, B)
+
+            # sim = 1 - self.cosine(net.module.global_desc(mem_desc).unsqueeze(1), gd.unsqueeze(1))[:, :, 0, 0].clamp(min=0)
+            sim = torch.cdist(net.module.global_desc(mem_desc), gd)
+
+            loss = (torch.log(sim.unsqueeze(1) / sim.unsqueeze(2)) -
+                    torch.log(mut_info.unsqueeze(1) / mut_info.unsqueeze(2)).clamp(min=-10, max=10))**2
+            loss = loss.mean(dim=(1, 2)) + torch.norm(gd, dim=-1) * 0.01
         else:
-            mem_pts_scr = torch.zeros(0, 2).to(valid_pts_scr)
-            mtch_pts_idx = _mtch_mem_idx = inv_idx = torch.zeros_like(mem_idx)
-
-        # select from close neighbors those that has a match
-        mtch_mem_idx = mem_idx[_mtch_mem_idx]
-        mtch_loc = inv_idx, torch.arange(len(mtch_mem_idx)).to(mtch_mem_idx)
-
-
-        mtch_desc = valid_desc[mtch_pts_idx]
-        loss = self.cosine(mtch_desc.unsqueeze(0), self.memory.get_descriptors(mtch_mem_idx).unsqueeze(0))[0]
-        loss[mtch_loc] = 1 - loss[mtch_loc]
-
-        pts_loss, mem_loss = loss.mean(dim=1), loss.mean(dim=0)
-        self.memory.update(mtch_mem_idx, mtch_desc[inv_idx], mem_loss)
-
-        is_new = torch.ones(len(valid_pts), dtype=torch.bool, device=valid_pts.device)
-        is_new[mtch_pts_idx] = False
-        self.memory.store(valid_pts[is_new], valid_desc[is_new])
+            loss = torch.zeros(1).to(imgs)
 
         n_iter = self.counter.steps
         if self.writer is not None:
-            n_new = is_new.sum()
-            self.writer.add_scalars('Misc/DiscriptorRentention', {
-                'n_close': len(mem_idx), 'n_match': len(valid_pts) - n_new, 'n_new': n_new
-            }, n_iter)
-            self.writer.add_histogram('Misc/DiscriptorRentention/MemoryUsage/%s' % env, self.memory.rank, n_iter)
+            self.writer.add_scalars('Misc/MemoryUsage', {'len': len(self.memory)}, n_iter)
+            if len(self.memory) > 0:
+                self.writer.add_histogram('Misc/MutInfo', torch.log10(mut_info), n_iter)
 
-        if self.debug and n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
-            pts_vals, mem_vals = np.zeros(len(valid_pts_scr)), np.zeros(len(mem_pts_scr))
-            # color coding
-            mem_vals[:], pts_vals[:] = -1, 2
-            mem_vals[_mtch_mem_idx.cpu().numpy()] = mem_loss.detach().cpu().numpy()
-            self.viz.show(imgs[0:1], torch.cat([valid_pts_scr, mem_pts_scr]).unsqueeze(0),
-                          'gnuplot2', values=np.expand_dims(np.concatenate([pts_vals, mem_vals]), 0),
-                          vmin=-1, vmax=2, name='Misc/DiscriptorRentention/MatchedPoints', step=n_iter)
+        if n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
+            B, N, _ = points.shape
+            proj_pts_ = mem_pts_scr.reshape(self.n_sample, B, N, 2).permute(1, 0, 2, 3).reshape(B, self.n_sample*N, 2)
+            proj_pts_color = torch.arange(self.n_sample + 1)[None, :, None].expand(B, self.n_sample+1, N)
+            proj_pts_color = proj_pts_color.reshape(B, (self.n_sample + 1)* N).detach().cpu().numpy()
+            self.viz.show(imgs, torch.cat([points, proj_pts_], 1), 'tab10', values=proj_pts_color,
+                        vmin=0, vmax=10, name='Misc/GlobalDesc/Proj', step=n_iter)
 
-        return pts_loss.mean() if n_iter > 1000 and pts_loss.numel() > 0 else torch.zeros(1).to(loss)
+        self.memory.store(gd, descriptors, points_w)
+
+        return loss.mean()
 
 
 class DiscriptorMatchLoss(nn.Module):

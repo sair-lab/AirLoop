@@ -119,6 +119,35 @@ class DescriptorHead(nn.Module):
         return descriptors
 
 
+class GDNet(nn.Module):
+    def __init__(self, feat_dim, desc_dim, n_heads=4, n_pass=1):
+        super().__init__()
+        self.attn = nn.ModuleList([
+            nn.MultiheadAttention(feat_dim, n_heads)
+            for _ in range(n_pass)])
+        self.weight = nn.Sequential(
+            nn.Linear(feat_dim, desc_dim), nn.ReLU(),
+            nn.Linear(desc_dim, desc_dim), nn.ReLU(),
+            nn.Linear(desc_dim, 1), nn.LeakyReLU(),
+        )
+        self.content = nn.Sequential(
+            nn.Linear(feat_dim, desc_dim), nn.ReLU(),
+            nn.Linear(desc_dim, desc_dim), nn.ReLU(),
+            nn.Linear(desc_dim, desc_dim),
+        )
+
+    def forward(self, features):
+        for at in self.attn:
+            features = self._res_attend(at, features, features)
+        weights, content = self.weight(features), self.content(features)
+        return (weights.transpose(1, 2) @ content).squeeze(1)
+
+    def _res_attend(self, attn, q_desc, kv_desc):
+        # nn.MultiheadAttention uses axis order (N, B, D)
+        q, kv = q_desc.permute(1, 0, 2), kv_desc.permute(1, 0, 2)
+        return attn.forward(q, kv, kv, need_weights=False)[0].permute(1, 0, 2)
+
+
 class FeatureNet(models.VGG):
     def __init__(self, feat_dim=256, feat_num=500, sample_pass=1):
         super().__init__(models.vgg13().features)
@@ -130,10 +159,7 @@ class FeatureNet(models.VGG):
 
         self.scores = ScoreHead(8)
         self.descriptors = DescriptorHead(feat_dim, feat_num, sample_pass)
-        self.graph = nn.Sequential(
-            GraphAttn(self.feat_dim, self.feat_dim),
-            nn.BatchNorm1d(feat_num), nn.LeakyReLU(0.2),
-            GraphAttn(self.feat_dim, self.feat_dim))
+        self.global_desc = GDNet(feat_dim, feat_dim)
         self.nms = nms.NonMaximaSuppression2d((5, 5))
 
     def forward(self, inputs):
@@ -162,10 +188,10 @@ class FeatureNet(models.VGG):
 
         descriptors = self.descriptors(inputs, features, points, scores)
 
-        descriptors = self.graph(descriptors)
+        gd = self.global_desc(descriptors[((n_group - 1) * B):])
 
         N = n_group * self.feat_num
-        return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N)
+        return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), gd
 
     @staticmethod
     def _append_group(grouped_samples, sample_pass, new_group):
@@ -191,7 +217,7 @@ def _repeat_flatten(x, n):
 if __name__ == "__main__":
     '''Test codes'''
     import argparse
-    from tool import Timer
+    from .tool import Timer
 
     parser = argparse.ArgumentParser(description='Test FeatureNet')
     parser.add_argument("--device", type=str, default='cuda', help="cuda, cuda:0, or cpu")

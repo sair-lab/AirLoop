@@ -2,6 +2,6 @@
 
 from .visualization import Visualizer
 
-from .geometry import Projector
+from .geometry import Projector, src_repeat, dst_repeat
 
 from .evaluation import MatchEvaluator

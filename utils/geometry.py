@@ -33,11 +33,11 @@ class Projector(nn.Module):
         H, W = depth_map.shape[2:]
         # TODO don't self-project
         # [0 0 0 ... 1 1 1 ... 2 2 2 ...] vs [0 1 2 ... 0 1 2 ... 0 1 2 ...]
-        depths_rep = self._src_repeat(depth_map)
-        points_rep = self._src_repeat(points)
+        depths_rep = src_repeat(depth_map)
+        points_rep = src_repeat(points)
 
-        cam_src = self._make_camera(H, W, self._src_repeat(Ks), self._src_repeat(poses))
-        cam_dst = self._make_camera(H, W, self._dst_repeat(Ks), self._dst_repeat(poses))
+        cam_src = self._make_camera(H, W, src_repeat(Ks), src_repeat(poses))
+        cam_dst = self._make_camera(H, W, dst_repeat(Ks), dst_repeat(poses))
 
         proj_p, (pair_idx, point_idx) = self(points_rep, depths_rep, cam_src, cam_dst, depths_rep)
         return proj_p.reshape(B, B, N, 2), torch.stack([pair_idx // B, pair_idx % B, point_idx])
@@ -120,14 +120,14 @@ class Projector(nn.Module):
         assert depths_map.shape[:2] == (len(points), 1)
         return F.grid_sample(depths_map, points[:, None], align_corners=False)[:, 0, 0, ...]
 
-    @staticmethod
-    def _src_repeat(x):
-        """[b0 b1 b2 ...] -> [b0 b0 ... b1 b1 ...]"""
-        B, shape = x.shape[0], x.shape[1:]
-        return x.unsqueeze(1).expand(B, B, *shape).reshape(B**2, *shape)
+def src_repeat(x, n_dst=None):
+    """[b0 b1 b2 ...] -> [b0 b0 ... b1 b1 ...]"""
+    B, shape = x.shape[0], x.shape[1:]
+    n_dst = n_dst if n_dst is not None else B
+    return x.unsqueeze(1).expand(B, n_dst, *shape).reshape(B * n_dst, *shape)
 
-    @staticmethod
-    def _dst_repeat(x):
-        """[b0 b1 b2 ...] -> [b0 b1 ... b0 b1 ...]"""
-        B, shape = x.shape[0], x.shape[1:]
-        return x.unsqueeze(0).expand(B, B, *shape).reshape(B**2, *shape)
+def dst_repeat(x, n_src=None):
+    """[b0 b1 b2 ...] -> [b0 b1 ... b0 b1 ...]"""
+    B, shape = x.shape[0], x.shape[1:]
+    n_src = n_src if n_src is not None else B
+    return x.unsqueeze(0).expand(n_src, B, *shape).reshape(n_src * B, *shape)

@@ -69,8 +69,8 @@ def train(net, loader, criterion, optimizer, counter, args=None, loss_ave=50, ev
         poses = poses.to(args.device)
         K = K.to(args.device)
         optimizer.zero_grad()
-        descriptors, points, pointness, scores = net(images)
-        loss = criterion(descriptors, points, scores, pointness, depths, poses, K, images, env_seq[0])
+        descriptors, points, pointness, scores, gd = net(images)
+        loss = criterion(net, gd, descriptors, points, scores, pointness, depths, poses, K, images, env_seq[0])
         loss.backward()
         optimizer.step()
 
@@ -94,6 +94,7 @@ def train(net, loader, criterion, optimizer, counter, args=None, loss_ave=50, ev
 if __name__ == "__main__":
     # Arguements
     parser = argparse.ArgumentParser(description='Feature Graph Networks')
+    parser.add_argument("--gd-only", action='store_true', help="Train global descriptor only")
     parser.add_argument("--device", type=str, default='cuda:0', help="cuda or cpu")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
     parser.add_argument("--train-root", type=str, default='/data/datasets/tartanair', help="data location")
@@ -131,10 +132,11 @@ if __name__ == "__main__":
 
     train_data, eval_data = TartanAir(args.train_root, args.scale, catalog_path=args.train_catalog) \
         .rand_split([1 - args.eval_percentage, args.eval_percentage], args.eval_split_seed)
-    eval_data.augment = AirAugment(args.scale, resize_only=True)
+    if args.gd_only:
+        train_data.augment = AirAugment(args.scale, resize_only=True)
     test_data = TartanAirTest(args.test_root, args.scale, catalog_path=args.test_catalog)
 
-    train_sampler = AirSampler(train_data, args.batch_size, shuffle='all', overlap=True)
+    train_sampler = AirSampler(train_data, args.batch_size, shuffle='none' if args.gd_only else 'all', overlap=~args.gd_only)
     eval_sampler = AirSampler(eval_data, args.batch_size, shuffle='none', overlap=False)
     test_sampler = AirSampler(test_data, args.batch_size, shuffle='none')
 
@@ -156,7 +158,10 @@ if __name__ == "__main__":
     net = FeatureNet(args.feat_dim, args.feat_num).to(args.device) if args.load is None else torch.load(args.load, args.device)
     if not isinstance(net, nn.DataParallel):
         net = nn.DataParallel(net)
-    optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
+    if args.gd_only:
+        optimizer = optim.Adam(net.module.global_desc.parameters(), lr=args.lr, weight_decay=args.w_decay)
+    else:
+        optimizer = optim.RMSprop(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.w_decay)
     scheduler = EarlyStopScheduler(optimizer, factor=args.factor, verbose=True, min_lr=args.min_lr, patience=args.patience)
 
     evaluator = MatchEvaluator(back=args.eval_back, viz=None, top=args.eval_topk, writer=writer, counter=step_counter)
