@@ -118,10 +118,10 @@ class ScoreLoss(nn.Module):
 
 class GlobalDescMatchLoss(nn.Module):
     eps = 1e-2
-    logp_min = -50
+    logp_min = -12
 
-    def __init__(self, writer=None, sig=5, n_sample=8,
-                 D_point=256, D_frame=256, n_feature=250, swap_dir='./memory',
+    def __init__(self, writer=None, sig=1000, n_sample=8,
+                 D_point=256, D_frame=256 * 16, n_feature=250, swap_dir='./memory',
                  viz=None, viz_start=float('inf'), viz_freq=200, counter=None, debug=False):
         super().__init__()
         self.writer = writer
@@ -134,39 +134,27 @@ class GlobalDescMatchLoss(nn.Module):
         self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq
         self.debug = debug
 
-    def forward(self, net, imgs, gd, points, depth_map, pose, K, descriptors, env):
+    def forward(self, net, imgs, gd, gd_locs, points, score_map, depth_map, pose, K, descriptors, env):
         self.memory.swap(env)
 
+        points = (torch.rand_like(points) - 0.5) * 2
         points_w = self.projector.pix2world(points, depth_map, pose, K)
 
         if len(self.memory) > 0:
             B, _, H, W = depth_map.shape
             _, mem_desc, mem_pos = self.memory.sample_frames(self.n_sample)
 
-            # find where points from other frames land
-            mem_pts_scr, mem_pts_depth = self.projector.world2pix(src_repeat(mem_pos, B), (H, W),
-                dst_repeat(pose, self.n_sample), dst_repeat(K, self.n_sample))
-            mem_pts_scr_depth = self.grid_sample((dst_repeat(depth_map, self.n_sample), mem_pts_scr)).squeeze(-1)
-            mem_pts_scr[(mem_pts_depth > mem_pts_scr_depth + self.eps) | ((mem_pts_scr.abs() > 1).any(dim=-1))] = np.nan
-
-            dist = torch.cdist(C.denormalize_pixel_coordinates(dst_repeat(points, self.n_sample), H, W),
-                                C.denormalize_pixel_coordinates(mem_pts_scr, H, W))
-
-            norm_c = 1 / (2 * np.pi * self.sig)
-            logp_min = torch.tensor(self.logp_min).to(dist)
-            logp_joint = -dist ** 2 / (2 * self.sig ** 2)
-            logp_joint = logp_joint.where(logp_joint.isfinite(), logp_min).clamp(min=logp_min)
-            mut_info = (logp_joint.exp() / norm_c *
-                        (logp_joint - logp_joint.sum(dim=1, keepdim=True) - logp_joint.sum(dim=2, keepdim=True)
-                         - np.log(norm_c))).sum(dim=(1, 2))
-            mut_info = mut_info.reshape(self.n_sample, B)
-
+            relevance, mem_pts_scr = feature_pt_ncovis(mem_pos, points, depth_map, pose, K, self.projector, self.grid_sample,
+                                     self.eps, True)
+            relevance = (251 - relevance).sqrt()
             # sim = 1 - self.cosine(net.module.global_desc(mem_desc).unsqueeze(1), gd.unsqueeze(1))[:, :, 0, 0].clamp(min=0)
-            sim = torch.cdist(net.module.global_desc(mem_desc), gd)
+            sim = torch.cdist(net.module.global_desc(mem_desc)[0], gd)
 
             loss = (torch.log(sim.unsqueeze(1) / sim.unsqueeze(2)) -
-                    torch.log(mut_info.unsqueeze(1) / mut_info.unsqueeze(2)).clamp(min=-10, max=10))**2
-            loss = loss.mean(dim=(1, 2)) + torch.norm(gd, dim=-1) * 0.01
+                    torch.log(relevance.unsqueeze(1) / relevance.unsqueeze(2)).clamp(min=-10, max=10))**2
+            gd_loc_sp = torch.norm(gd_locs, p=1, dim=-1).mean(dim=-1)
+            gd_norm = torch.norm(gd, dim=-1)
+            loss = loss.mean(dim=(1, 2)) + gd_norm * 1e-4 + gd_loc_sp * 1e-4
         else:
             loss = torch.zeros(1).to(imgs)
 
@@ -174,9 +162,10 @@ class GlobalDescMatchLoss(nn.Module):
         if self.writer is not None:
             self.writer.add_scalars('Misc/MemoryUsage', {'len': len(self.memory)}, n_iter)
             if len(self.memory) > 0:
-                self.writer.add_histogram('Misc/MutInfo', torch.log10(mut_info), n_iter)
+                self.writer.add_histogram('Misc/FrameRelevance', relevance, n_iter)
+                self.writer.add_scalars('Misc/GD', {'LocSparsity': gd_loc_sp.mean() / gd.shape[1], '2-Norm': gd_norm.mean()}, n_iter)
 
-        if n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
+        if len(self.memory) > 0 and n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
             B, N, _ = points.shape
             proj_pts_ = mem_pts_scr.reshape(self.n_sample, B, N, 2).permute(1, 0, 2, 3).reshape(B, self.n_sample*N, 2)
             proj_pts_color = torch.arange(self.n_sample + 1)[None, :, None].expand(B, self.n_sample+1, N)
@@ -187,6 +176,23 @@ class GlobalDescMatchLoss(nn.Module):
         self.memory.store(gd, descriptors, points_w)
 
         return loss.mean()
+
+
+def feature_pt_ncovis(pos0, pts1, depth1, pose1, K1, projector, grid_sample, eps=1e-2, ret_proj=False):
+    B0, B1 = len(pos0), len(pts1)
+    _, _, H, W = depth1.shape
+
+    # find where points from other frames land
+    pts0_scr1, pts0_depth1 = projector.world2pix(src_repeat(pos0, B1), (H, W),
+        dst_repeat(pose1, B0), dst_repeat(K1, B0))
+    pts0_scr1_depth1 = grid_sample((dst_repeat(depth1, B0), pts0_scr1)).squeeze(-1)
+    pts0_scr1[(pts0_depth1 < 0) | (pts0_depth1 > pts0_scr1_depth1 + eps) | ((pts0_scr1.abs() > 1).any(dim=-1))] = np.nan
+
+    n_covis = pts0_scr1.isfinite().all(dim=-1).sum(dim=-1).to(torch.float)
+
+    if ret_proj:
+        return n_covis.reshape(B0, B1), pts0_scr1
+    return n_covis.reshape(B0, B1)
 
 
 class DiscriptorMatchLoss(nn.Module):
