@@ -161,6 +161,11 @@ class FeatureNet(models.VGG):
         self.scores = ScoreHead(8)
         self.descriptors = DescriptorHead(feat_dim, feat_num, sample_pass)
         self.global_desc = GDNet(feat_dim, feat_dim)
+        self.graph = nn.Sequential(
+            GraphAttn(self.feat_dim, self.feat_dim),
+            nn.BatchNorm1d(feat_num), nn.LeakyReLU(0.2),
+            GraphAttn(self.feat_dim, self.feat_dim))
+        self.pos_enc = nn.Sequential(nn.Linear(2, 256), nn.ReLU(), nn.Linear(256, self.feat_dim))
         self.nms = nms.NonMaximaSuppression2d((5, 5))
 
     def forward(self, inputs):
@@ -189,7 +194,12 @@ class FeatureNet(models.VGG):
 
         descriptors = self.descriptors(inputs, features, points, scores)
 
-        gd = self.global_desc(descriptors[((n_group - 1) * B):])
+        rand_end = (n_group - 1) * B
+
+        gd, gd_locs = self.global_desc(descriptors[rand_end:])
+
+        descriptors = descriptors + self.pos_enc(points)
+        descriptors = torch.cat([descriptors[:rand_end], self.graph(descriptors[rand_end:])])
 
         N = n_group * self.feat_num
         return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), gd, gd_locs
