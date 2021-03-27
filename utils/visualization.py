@@ -5,8 +5,10 @@ import cv2
 import torch
 import numpy as np
 import torchvision
+from PIL import Image
 from matplotlib import cm
 import matplotlib.colors as mc
+from matplotlib import pyplot as plt
 import kornia.geometry.conversions as C
 
 
@@ -20,6 +22,8 @@ class Visualizer():
 
         if display == 'imshow':
             self.displayer = ImshowDisplayer()
+        if display == 'plt':
+            self.displayer = PltDisplayer(**kwargs)
         elif display == 'tensorboard':
             self.displayer = TBDisplayer(**kwargs)
         elif display == 'video':
@@ -86,6 +90,20 @@ class VisDisplayer():
 
     def close(self):
         pass
+
+
+class PltDisplayer(VisDisplayer):
+    def __init__(self, fig_size=None):
+        self.fig_size = fig_size
+
+    def display(self, name, frame, step=0):
+        fig = plt.figure(figsize=self.fig_size)
+        ax = fig.gca()
+        ax.imshow(frame[:, :, ::-1])
+        fig.tight_layout()
+
+    def close(self):
+        plt.close('all')
 
 
 class ImshowDisplayer(VisDisplayer):
