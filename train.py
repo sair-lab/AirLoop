@@ -35,7 +35,7 @@ def evaluate(net, evaluator, loader, args):
         depths = depths.to(args.device)
         poses = poses.to(args.device)
         K = K.to(args.device)
-        descriptors, points, pointness, scores = net(images)
+        descriptors, points, pointness, scores, gd = net(images)
         evaluator.observe(descriptors, points, scores, pointness, depths, poses, K, images, env_seq)
 
     evaluator.report()
@@ -69,8 +69,8 @@ def train(net, loader, criterion, optimizer, counter, args=None, loss_ave=50, ev
         poses = poses.to(args.device)
         K = K.to(args.device)
         optimizer.zero_grad()
-        descriptors, points, pointness, scores, gd = net(images)
-        loss = criterion(net, gd, descriptors, points, scores, pointness, depths, poses, K, images, env_seq[0])
+        descriptors, points, pointness, scores, gd, gd_locs = net(images)
+        loss = criterion(net, gd, gd_locs, descriptors, points, scores, pointness, depths, poses, K, images, env_seq[0])
         loss.backward()
         optimizer.step()
 

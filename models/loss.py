@@ -18,7 +18,7 @@ from utils import Projector, src_repeat, dst_repeat
 
 
 class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 1, 1], K=None, writer=None, viz_start=float('inf'), viz_freq=200, counter=None):
+    def __init__(self, beta=[1, 1, 5], K=None, writer=None, viz_start=float('inf'), viz_freq=200, counter=None):
         super().__init__()
         self.writer, self.beta, self.counter = writer, beta, counter if counter is not None else GlobalStepCounter()
         self.viz = Visualizer() if self.writer is None else Visualizer('tensorboard', writer=self.writer)
@@ -28,7 +28,7 @@ class FeatureNetLoss(nn.Module):
         self.gd_match = GlobalDescMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.projector = Projector()
 
-    def forward(self, net, gd, descriptors, points, scores, score_map, depth_map, poses, K, imgs, env):
+    def forward(self, net, gd, gd_locs, descriptors, points, scores, score_map, depth_map, poses, K, imgs, env):
         def batch_project(pts):
             return self.projector.cartesian(pts, depth_map, poses, K)
 
@@ -51,7 +51,7 @@ class FeatureNetLoss(nn.Module):
         cornerness = self.beta[0] * self.score_corner(score_map, imgs, batch_project)
         proj_pts, invis_idx = batch_project(points)
         match = self.beta[1] * self.desc_match(imgs, descriptors, scores, points.unsqueeze(0), proj_pts, invis_idx, H, W)
-        gd_match = self.beta[2] * self.gd_match(net, imgs, gd, points[:, rand_end:], depth_map, poses, K, descriptors[:, rand_end:], env[0])
+        gd_match = self.beta[2] * self.gd_match(net, imgs, gd, gd_locs, points[:, rand_end:], score_map, depth_map, poses, K, descriptors[:, rand_end:], env[0])
         loss = cornerness + match + gd_match
 
         n_iter = self.counter.steps

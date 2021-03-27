@@ -125,10 +125,11 @@ class GDNet(nn.Module):
         self.attn = nn.ModuleList([
             nn.MultiheadAttention(feat_dim, n_heads)
             for _ in range(n_pass)])
-        self.weight = nn.Sequential(
+        self.actv = nn.ReLU()
+        self.loc = nn.Sequential(
             nn.Linear(feat_dim, desc_dim), nn.ReLU(),
             nn.Linear(desc_dim, desc_dim), nn.ReLU(),
-            nn.Linear(desc_dim, 1), nn.LeakyReLU(),
+            nn.Linear(desc_dim, desc_dim), nn.LeakyReLU(),
         )
         self.content = nn.Sequential(
             nn.Linear(feat_dim, desc_dim), nn.ReLU(),
@@ -138,9 +139,9 @@ class GDNet(nn.Module):
 
     def forward(self, features):
         for at in self.attn:
-            features = self._res_attend(at, features, features)
-        weights, content = self.weight(features), self.content(features)
-        return (weights.transpose(1, 2) @ content).squeeze(1)
+            features = self.actv(self._res_attend(at, features, features))
+        locs, content = self.loc(features), self.content(features)
+        return (locs * content).sum(1), locs
 
     def _res_attend(self, attn, q_desc, kv_desc):
         # nn.MultiheadAttention uses axis order (N, B, D)
@@ -191,7 +192,7 @@ class FeatureNet(models.VGG):
         gd = self.global_desc(descriptors[((n_group - 1) * B):])
 
         N = n_group * self.feat_num
-        return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), gd
+        return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), gd, gd_locs
 
     @staticmethod
     def _append_group(grouped_samples, sample_pass, new_group):
