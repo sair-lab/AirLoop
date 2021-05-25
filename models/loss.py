@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import os
+import copy
 import torch
+import torch.autograd as ag
 import numpy as np
 import kornia as kn
 import torch.nn as nn
@@ -9,74 +11,157 @@ import kornia.feature as kf
 import torch.nn.functional as F
 import kornia.geometry.conversions as C
 
+from datasets import AirAugment
 from utils import Visualizer
 from models.memory import Memory
-from models.featurenet import GridSample
-from models.BAnet import ConsecutiveMatch
-from models.tool import GlobalStepCounter
-from utils import Projector, src_repeat, dst_repeat
+from utils import GridSample, Projector, PairwiseCosine, ConsecutiveMatch, gen_probe, feature_pt_ncovis
 
 
-class FeatureNetLoss(nn.Module):
-    def __init__(self, beta=[1, 1, 5], K=None, writer=None, viz_start=float('inf'), viz_freq=200, counter=None):
+class MemReplayLoss():
+    def __init__(self, beta=[1, 1, 1, 10], writer=None, viz_start=float('inf'), viz_freq=200, counter=None, args=None):
         super().__init__()
-        self.writer, self.beta, self.counter = writer, beta, counter if counter is not None else GlobalStepCounter()
-        self.viz = Visualizer() if self.writer is None else Visualizer('tensorboard', writer=self.writer)
+        self.writer, self.beta, self.counter = writer, beta, counter
         self.viz_start, self.viz_freq = viz_start, viz_freq
-        self.score_corner = ScoreLoss()
-        self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.gd_match = GlobalDescMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.viz = Visualizer() if self.writer is None else Visualizer('tensorboard', writer=self.writer)
         self.projector = Projector()
+        self.grid_sample = GridSample()
+        self.augment = AirAugment(scale=args.scale)
+        self.memory = Memory(capacity=1000, n_probe=1200, swap_dir='workspace/air-slam/.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
+        if args.mem_load is not None:
+            self.memory.load(args.mem_load)
+        self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.n_triplet, self.n_recent, self.n_pair = 8, 0, 1
+        self.min_sample_size = 32
+        self.gd_match = GlobalDescMatchLoss(n_triplet=self.n_triplet, n_pair=self.n_pair, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.mas = MASLoss(self.memory, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
 
-    def forward(self, net, gd, gd_locs, descriptors, points, scores, score_map, depth_map, poses, K, imgs, env):
+    def __call__(self, net, img, depth_map, pose, K, env):
+        device = img.device
+        self.store_memory(img, depth_map, pose, K, env)
+
+        if len(self.memory) < self.min_sample_size:
+            return torch.zeros(1).to(device)
+
+        _, (ank_batch, pos_batch, neg_batch), (pos_rel, neg_rel) = \
+            self.memory.sample_frames(self.n_triplet, self.n_recent, self.n_pair)
+
+        # no suitable triplet
+        if ank_batch is None:
+            return torch.zeros(1).to(device)
+
+        img = recombine('img', ank_batch, pos_batch, neg_batch)
+        depth_map = recombine('depth_map', ank_batch, pos_batch, neg_batch)
+        pose = recombine('pose', ank_batch, pos_batch, neg_batch)
+        K = recombine('K', ank_batch, pos_batch, neg_batch)
+
+        if self.augment is not None:
+            augmented = [(self.augment(img_, K_, depth_map_)) for img_, K_, depth_map_ in zip(img, K, depth_map)]
+            img, K, depth_map = [torch.stack(list(tensor)) for tensor in zip(*augmented)]
+
+        img, depth_map, pose, K = img.to(device), depth_map.to(device), pose.to(device), K.to(device)
+
+        descriptors, points, score_map, scores, gd, _ = net(img=img)
+
         def batch_project(pts):
-            return self.projector.cartesian(pts, depth_map, poses, K)
+            return self.projector.cartesian(pts, depth_map, pose, K)
 
-        n_iter = self.counter.steps
-        if n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
-            self.viz.show(imgs, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='train', step=n_iter)
+        def sim_metric(x, y):
+            cosine = PairwiseCosine(inter_batch=True)
+            return cosine(x, y)
+            # return net(desc0=x, desc1=y)
 
-            self.viz.show(score_map, color='hot', name='score', step=n_iter)
+        cornerness = self.beta[0] * self.score_corner(score_map, img, batch_project)
+        neg_st = self.n_triplet * (1 + self.n_pair)
+        desc_match = self.beta[1] * self.desc_match(sim_metric, img[:neg_st], points[:neg_st], descriptors[:neg_st], scores[:neg_st], depth_map[:neg_st], pose[:neg_st], K[:neg_st])
+        gd_match = self.beta[2] * self.gd_match(gd)
+        loss = cornerness + desc_match + gd_match
 
-            pair = torch.tensor([[0, 1], [0, 3], [0, 5], [0, 7]])
-            b_src, b_dst = pair[:, 0], pair[:, 1]
-            matched, confidence = ConsecutiveMatch()(descriptors[b_src], descriptors[b_dst], points[b_dst])
-            top_conf, top_idx = confidence.topk(50, dim=1)
-            top_conf, top_idx = top_conf.detach().cpu().numpy(), top_idx.unsqueeze(-1).repeat(1, 1, 2)
-            self.viz.showmatch(imgs[b_src], points[b_src].gather(1, top_idx), imgs[b_dst], matched.gather(1, top_idx), 'hot', top_conf, 0.9, 1, name='match', step=n_iter)
+        if len(self.memory.envs()) > 1:
+            mas = self.beta[3] * self.mas(net, env)
+            loss += mas
 
-        H, W = score_map.size(2), score_map.size(3)
-        # don't use random proposal when calculating gd
-        rand_end = -points.shape[1] // (net.module.sample_pass + 1)
-        cornerness = self.beta[0] * self.score_corner(score_map, imgs, batch_project)
-        proj_pts, invis_idx = batch_project(points)
-        match = self.beta[1] * self.desc_match(imgs, descriptors, scores, points.unsqueeze(0), proj_pts, invis_idx, H, W)
-        gd_match = self.beta[2] * self.gd_match(net, imgs, gd, gd_locs, points[:, rand_end:], score_map, depth_map, poses, K, descriptors[:, rand_end:], env[0])
-        loss = cornerness + match + gd_match
-
-        n_iter = self.counter.steps
         if self.writer is not None:
+            n_iter = self.counter.steps if self.counter is not None else 0
             self.writer.add_scalars('Loss', {'cornerness': cornerness,
-                                             'match': match,
+                                             'mas': mas,
+                                             'desc': desc_match,
                                              'global': gd_match,
                                              'all': loss}, n_iter)
+            if len(self.memory.envs()) > 1:
+                self.writer.add_scalars('Loss', {'mas': mas}, n_iter)
+            self.writer.add_histogram('Misc/RelN', neg_rel, n_iter)
+            self.writer.add_histogram('Misc/RelP', pos_rel, n_iter)
+            self.writer.add_scalars('Misc/MemoryUsage', {'len': len(self.memory)}, n_iter)
+
+            # show triplets
+            if self.viz is not None and n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
+                self.viz.show(img, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='Out/Points', step=n_iter)
+
+                N, (H, W) = ank_batch['pos'].shape[1], img.shape[2:]
+
+                # project points from pos to ank
+                mem_pts_scr = self.projector.world2pix(pos_batch['pos'].reshape(-1, N, 3), (H, W), ank_batch['pose'], ank_batch['K'], ank_batch['depth_map'])[0]
+                B_total = self.n_triplet * (self.n_pair * 2 + 1)
+                mem_pts_scr_ = mem_pts_scr.reshape(self.n_triplet, self.n_pair * N, 2)
+                proj_pts_ = torch.cat([
+                    torch.zeros_like(mem_pts_scr_).fill_(np.nan),
+                    mem_pts_scr_,
+                    torch.zeros_like(mem_pts_scr_).fill_(np.nan)], 1).reshape(B_total, self.n_pair * N, 2)
+
+                proj_pts_color = torch.arange(self.n_pair)[None, :, None].expand(B_total, self.n_pair, N) + 1
+                proj_pts_color = proj_pts_color.reshape(B_total, self.n_pair * N).detach().cpu().numpy()
+
+                ank_img, pos_img, neg_img = img.split([self.n_triplet, self.n_triplet * self.n_pair, self.n_triplet * self.n_pair])
+                self.viz.show(
+                    torch.cat([pos_img.reshape(self.n_triplet, self.n_pair, 3, H, W), ank_img[:, None], neg_img.reshape(self.n_triplet, self.n_pair, 3, H, W)], dim=1).reshape(-1, 3, H, W),
+                    proj_pts_, 'tab10', values=proj_pts_color, vmin=0, vmax=10, name='Misc/GlobalDesc/Triplet', step=n_iter,
+                    nrow=(self.n_pair * 2 + 1))
 
         return loss
 
+    def store_memory(self, imgs, depth_map, pose, K, env):
+        self.memory.swap(env[0])
+        points = gen_probe(depth_map)
+        points_w = self.projector.pix2world(points, depth_map, pose, K)
+
+        def project(mem_pos):
+            return feature_pt_ncovis(mem_pos.to(depth_map), points, depth_map, pose, K, self.projector, self.grid_sample).to(mem_pos)
+        self.memory.store_fifo(pos=points_w, proj_fn=project, img=imgs, depth_map=depth_map, pose=pose, K=K)
+
+
+def recombine(key, *batches):
+    tensors = [batch[key] for batch in batches]
+    reversed_shapes = [list(reversed(tensor.shape)) for tensor in tensors]
+    common_shapes = []
+    for shape in zip(*reversed_shapes):
+        if all(s == shape[0] for s in shape):
+            common_shapes.insert(0, shape[0])
+        else:
+            break
+    return torch.cat([tensor.reshape(-1, *common_shapes) for tensor in tensors])
+
 
 class ScoreLoss(nn.Module):
-    def __init__(self, radius=8, num_corners=500):
+    def __init__(self, radius=8, num_corners=500, writer=None,
+                 viz=None, viz_start=float('inf'), viz_freq=200, counter=None):
         super(ScoreLoss, self).__init__()
         self.bceloss = nn.BCELoss()
         self.corner_det = kf.CornerGFTT()
         self.num_corners = num_corners
         self.pool = nn.MaxPool2d(kernel_size=radius, return_indices=True)
         self.unpool = nn.MaxUnpool2d(kernel_size=radius)
+        self.counter = counter
+        self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq
 
     def forward(self, scores_dense, imgs, projector):
         corners = self.get_corners(imgs, projector)
         corners = kn.filters.gaussian_blur2d(corners, kernel_size=(7, 7), sigma=(1, 1))
         lap = kn.filters.laplacian(scores_dense, 5) # smoothness
+
+        n_iter = self.counter.steps
+        if n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
+            self.viz.show(scores_dense, color='hot', name='Out/Score', step=n_iter)
 
         return self.bceloss(scores_dense, corners) + (scores_dense * torch.exp(-lap)).mean() * 10
 
@@ -118,81 +203,49 @@ class ScoreLoss(nn.Module):
 
 class GlobalDescMatchLoss(nn.Module):
     eps = 1e-2
-    logp_min = -12
+    thr = 0.3
 
-    def __init__(self, writer=None, sig=1000, n_sample=8,
-                 D_point=256, D_frame=256 * 16, n_feature=250, swap_dir='./memory',
+    def __init__(self, n_triplet=8, n_pair=1, writer=None,
                  viz=None, viz_start=float('inf'), viz_freq=200, counter=None, debug=False):
         super().__init__()
         self.writer = writer
-        self.memory = Memory(D_point, D_frame, n_feature, swap_dir)
         self.projector = Projector()
-        self.grid_sample = GridSample()
         self.cosine = PairwiseCosine(inter_batch=True)
-        self.counter = counter if counter is not None else GlobalStepCounter()
-        self.sig, self.n_sample, self.swap_dir = sig, n_sample, swap_dir
-        self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq
+        self.counter = counter
+        self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq * 10
         self.debug = debug
+        self.hist = {'imgs': None, 'depth_map': None, 'pose': None, 'K': None, 'len': 0}
+        self.imgs_hist, self.depth_map, self.pose, self.K = [None] * 4
+        self.n_triplet, self.n_pair = n_triplet, n_pair
 
-    def forward(self, net, imgs, gd, gd_locs, points, score_map, depth_map, pose, K, descriptors, env):
-        self.memory.swap(env)
+    def forward(self, gd):
+        gd, gd_locs = gd
 
-        points = (torch.rand_like(points) - 0.5) * 2
-        points_w = self.projector.pix2world(points, depth_map, pose, K)
+        gd_a, gd_p, gd_n = gd.split([self.n_triplet, self.n_triplet * self.n_pair, self.n_triplet * self.n_pair])
+        gd_a = gd_a[:, None]
+        gd_p = gd_p.reshape(self.n_triplet, self.n_pair, *gd_p.shape[1:])
+        gd_n = gd_n.reshape(self.n_triplet, self.n_pair, *gd_n.shape[1:])
 
-        if len(self.memory) > 0:
-            B, _, H, W = depth_map.shape
-            _, mem_desc, mem_pos = self.memory.sample_frames(self.n_sample)
-
-            relevance, mem_pts_scr = feature_pt_ncovis(mem_pos, points, depth_map, pose, K, self.projector, self.grid_sample,
-                                     self.eps, True)
-            relevance = (251 - relevance).sqrt()
-            # sim = 1 - self.cosine(net.module.global_desc(mem_desc).unsqueeze(1), gd.unsqueeze(1))[:, :, 0, 0].clamp(min=0)
-            sim = torch.cdist(net.module.global_desc(mem_desc)[0], gd)
-
-            loss = (torch.log(sim.unsqueeze(1) / sim.unsqueeze(2)) -
-                    torch.log(relevance.unsqueeze(1) / relevance.unsqueeze(2)).clamp(min=-10, max=10))**2
-            gd_loc_sp = torch.norm(gd_locs, p=1, dim=-1).mean(dim=-1)
-            gd_norm = torch.norm(gd, dim=-1)
-            loss = loss.mean(dim=(1, 2)) + gd_norm * 1e-4 + gd_loc_sp * 1e-4
-        else:
-            loss = torch.zeros(1).to(imgs)
+        gd_norm = torch.norm(gd, dim=-1)
+        # loss = self.triplet_loss(gd_a, gd_p, gd_n) + gd_norm * 1e-3
+        sim_ap = self.cosine(gd_a, gd_p)
+        sim_an = self.cosine(gd_a, gd_n)
+        triplet = (sim_an - sim_ap + 1).clamp(min=0)
+        # gd_loc_sp = torch.norm(F.normalize(gd_locs, dim=2), p=1, dim=2).mean(dim=1)
+        # gd_den = torch.norm(F.normalize(gd_locs.sum(dim=1), dim=1), p=1, dim=1)
+        loss = triplet.mean() # + (gd_loc_sp + F.relu(30 - gd_den)) * 1e-2
 
         n_iter = self.counter.steps
         if self.writer is not None:
-            self.writer.add_scalars('Misc/MemoryUsage', {'len': len(self.memory)}, n_iter)
-            if len(self.memory) > 0:
-                self.writer.add_histogram('Misc/FrameRelevance', relevance, n_iter)
-                self.writer.add_scalars('Misc/GD', {'LocSparsity': gd_loc_sp.mean() / gd.shape[1], '2-Norm': gd_norm.mean()}, n_iter)
-
-        if len(self.memory) > 0 and n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
-            B, N, _ = points.shape
-            proj_pts_ = mem_pts_scr.reshape(self.n_sample, B, N, 2).permute(1, 0, 2, 3).reshape(B, self.n_sample*N, 2)
-            proj_pts_color = torch.arange(self.n_sample + 1)[None, :, None].expand(B, self.n_sample+1, N)
-            proj_pts_color = proj_pts_color.reshape(B, (self.n_sample + 1)* N).detach().cpu().numpy()
-            self.viz.show(imgs, torch.cat([points, proj_pts_], 1), 'tab10', values=proj_pts_color,
-                        vmin=0, vmax=10, name='Misc/GlobalDesc/Proj', step=n_iter)
-
-        self.memory.store(gd, descriptors, points_w)
+            self.writer.add_histogram('Misc/RelevanceLoss', triplet, n_iter)
+            self.writer.add_histogram('Misc/SimAP', sim_ap, n_iter)
+            self.writer.add_histogram('Misc/SimAN', sim_an, n_iter)
+            self.writer.add_scalars('Misc/GD', {
+                # 'LocSparsity': gd_loc_sp.mean(),
+                # 'GDDensity': gd_den.mean(),
+                '2-Norm': gd_norm.mean()}, n_iter)
 
         return loss.mean()
-
-
-def feature_pt_ncovis(pos0, pts1, depth1, pose1, K1, projector, grid_sample, eps=1e-2, ret_proj=False):
-    B0, B1 = len(pos0), len(pts1)
-    _, _, H, W = depth1.shape
-
-    # find where points from other frames land
-    pts0_scr1, pts0_depth1 = projector.world2pix(src_repeat(pos0, B1), (H, W),
-        dst_repeat(pose1, B0), dst_repeat(K1, B0))
-    pts0_scr1_depth1 = grid_sample((dst_repeat(depth1, B0), pts0_scr1)).squeeze(-1)
-    pts0_scr1[(pts0_depth1 < 0) | (pts0_depth1 > pts0_scr1_depth1 + eps) | ((pts0_scr1.abs() > 1).any(dim=-1))] = np.nan
-
-    n_covis = pts0_scr1.isfinite().all(dim=-1).sum(dim=-1).to(torch.float)
-
-    if ret_proj:
-        return n_covis.reshape(B0, B1), pts0_scr1
-    return n_covis.reshape(B0, B1)
 
 
 class DiscriptorMatchLoss(nn.Module):
@@ -200,25 +253,38 @@ class DiscriptorMatchLoss(nn.Module):
 
     def __init__(self, radius=1, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, debug=False):
         super(DiscriptorMatchLoss, self).__init__()
-        self.radius, self.writer, self.counter = radius, writer, counter if counter is not None else GlobalStepCounter()
+        self.radius, self.writer, self.counter = radius, writer, counter
         self.cosine = PairwiseCosine(inter_batch=True)
         self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq
         self.debug = debug
+        self.projector = Projector()
 
-    def forward(self, images, descriptors, scores, pts_src, pts_dst, invis_idx, height, width):
+    def forward(self, metric, images, points, descriptors, scores, depth_map, poses, K):
+        height, width = images.shape[-2:]
+        proj_pts, invis_idx = self.projector.cartesian(points, depth_map, poses, K)
+        pts_src, pts_dst = points.unsqueeze(0), proj_pts
+
         pts_src = C.denormalize_pixel_coordinates(pts_src.detach(), height, width)
         pts_dst = C.denormalize_pixel_coordinates(pts_dst.detach(), height, width)
 
         dist = torch.cdist(pts_dst, pts_src)
         dist[tuple(invis_idx)] = float('nan')
-        pcos = self.cosine(descriptors, descriptors)
+
+        # !hardcode
+        pair = torch.tensor([[0, 8], [1, 9], [2, 10], [3, 11], [4, 12], [5, 13], [6, 14], [7, 15]])
+        b_src, b_dst = pair[:, 0], pair[:, 1]
+        # *non-cartesian
+        # dist = dist[b_src, b_dst]
 
         match = (dist <= self.radius).triu(diagonal=1)
         miss = (dist > self.radius).triu(diagonal=1)
 
         scores = scores.detach()
+        # !hardcode
         score_ave = (scores[:, None, :, None] + scores[None, :, None, :]).clamp(min=self.eps) / 2
-        pcos = self.cosine(descriptors, descriptors)
+        pcos = metric(descriptors, descriptors)
+        # *non-cartesian
+        # pcos = metric(descriptors[:8], descriptors[8:])
 
         sig_match = -torch.log(score_ave[match])
         sig_miss  = -torch.log(score_ave[miss])
@@ -236,6 +302,14 @@ class DiscriptorMatchLoss(nn.Module):
             if len(sig_match) > 0:
                 self.writer.add_histogram('Misc/DiscriptorMatch/Sim/match', s_match, n_iter)
                 self.writer.add_histogram('Misc/DiscriptorMatch/Sim/miss', s_miss[:len(s_match)], n_iter)
+
+            if n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
+                rand_end = 0#-points.shape[1] // 2
+                matched, confidence = ConsecutiveMatch()(descriptors[b_src, rand_end:], descriptors[b_dst, rand_end:], points[b_dst, rand_end:])
+                top_conf, top_idx = confidence.topk(50, dim=1)
+                top_conf, top_idx = top_conf.detach().cpu().numpy(), top_idx.unsqueeze(-1).repeat(1, 1, 2)
+                self.viz.showmatch(images[b_src], points[b_src].gather(1, top_idx), images[b_dst], matched.gather(1, top_idx), 'hot', top_conf, 0.9, 1, name='Out/Match', step=n_iter)
+
 
         # match/mismatch blending factor
         f = lambda d: 0.75 - (d - self.radius) * (d + self.radius) / (4 * self.radius**2)
@@ -286,16 +360,32 @@ class DiscriptorMatchLoss(nn.Module):
         return loss
 
 
-class PairwiseCosine(nn.Module):
-    def __init__(self, inter_batch=False, dim=-1, eps=1e-8):
-        super(PairwiseCosine, self).__init__()
-        self.inter_batch, self.dim, self.eps = inter_batch, dim, eps
-        self.eqn = 'amd,bnd->abmn' if inter_batch else 'bmd,bnd->bmn'
+class MASLoss():
+    def __init__(self, memory, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None):
+        self.writer, self.counter = writer, counter
+        self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq
+        self.old_params = None
+        self.memory = memory
+        self.cosine = PairwiseCosine()
 
-    def forward(self, x, y):
-        xx = torch.sum(x**2, dim=self.dim).unsqueeze(-1) # (A, M, 1)
-        yy = torch.sum(y**2, dim=self.dim).unsqueeze(-2) # (B, 1, N)
-        if self.inter_batch:
-            xx, yy = xx.unsqueeze(1), yy.unsqueeze(0) # (A, 1, M, 1), (1, B, 1, N)
-        xy = torch.einsum(self.eqn, x, y) if x.shape[1] > 0 else torch.zeros_like(xx * yy)
-        return xy / (xx * yy).clamp(min=self.eps**2).sqrt()
+    def __call__(self, model, cur_env):
+        if self.old_params is None:
+            self.old_params = [t.data.clone() for t in model.parameters()]
+
+        old_env = np.random.choice([env for env in self.memory.envs() if env != cur_env[0]])
+        self.memory.swap(old_env)
+        _, (ank_batch, pos_batch, neg_batch), _ = self.memory.sample_frames(4)
+        # !hardcode
+        img = recombine('img', ank_batch, pos_batch, neg_batch).to('cuda')
+
+        descriptors, _, _, _, gd, _ = model(img=img)
+        gd = F.normalize(gd[0], dim=-1)
+
+        gs = ag.grad(gd, model.parameters(), gd.sum(dim=0, keepdims=True).detach().expand_as(gd))
+        loss = 0
+        for g, param, old_param in zip(gs, model.parameters(), self.old_params):
+            loss += ((g * (param - old_param)) ** 2).sum()
+
+        self.memory.swap(cur_env[0])
+
+        return loss

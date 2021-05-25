@@ -4,156 +4,235 @@ import os
 import torch
 import numpy as np
 import torch.nn as nn
+from utils.misc import rectify_savepath
 
 
 class Memory(nn.Module):
-    def __init__(self, D_point, D_frame, n_fea, swap_dir='./memory', out_device='cuda'):
+    MAX_CAP = 2000
+    STATE_DICT = ['n_probe', 'swap_dir', 'out_device', 'capacity',
+                  'n_frame', 'property_spec', '_states', '_store', '_rel']
+
+    def __init__(self, capacity=MAX_CAP, n_probe=1200, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
         super().__init__()
-        self.D_point, self.D_frame, self.n_fea = D_point, D_frame, n_fea
+        self.n_probe = n_probe
         self.swap_dir = swap_dir
         self.out_device = out_device
+        self.capacity = capacity
+        self.n_frame = 0
+        self.property_spec = {
+            'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': 'cuda'},
+            'img': {'shape': (3,) + img_size, 'default': np.nan},
+            'pose': {'shape': (3, 4), 'default': np.nan},
+            'K': {'shape': (3, 3), 'default': np.nan},
+            'depth_map': {'shape': (1,) + img_size, 'default': np.nan},
+        }
+        self._states = {}
         self._store = None
+        self._rel = None
 
-    def sample_frames(self, n):
+    # exp_rand sample
+    # def sample_frames(self, n):
+    #     n_frame = len(self._store)
+    #     lamb = n_frame / 20
+    #     prob = torch.exp((torch.arange(n_frame, dtype=torch.float32) - n_frame) / lamb)
+    #     frame_idx = torch.multinomial(prob, n, replacement=(n_frame < n))
+    #     # frame_idx = torch.arange(n_frame - n, n_frame)
+    #     return [item.to(self.out_device) for item in self._store[frame_idx]]
+    ################################################################
+
+    # ################################################################ relevance sample
+    # def sample_frames(self, n, project):
+    #     fd, pd, pos = self._store[torch.arange(len(self._store))]
+    #     relevance, mem_pts_scr = project(pos.to(self.out_device))
+    #     relevance = relevance.T
+    #     mem_pts_scr = mem_pts_scr.transpose(0, 1)
+    #     # vis
+    #     # sample
+    #     cutoff = relevance.where(relevance > 0, torch.tensor(np.nan).to(relevance)).nanquantile(torch.tensor([0.1, 0.9]).to(relevance), dim=1, keepdim=True)
+    #     if cutoff.isnan().all():
+    #         return [None] * 7
+    #     pos_prob = (relevance >= cutoff[1].clamp(max=0.4)).to(torch.float)
+    #     neg_prob = (relevance <= cutoff[0]).to(torch.float)
+    #     pos_idx = torch.multinomial(pos_prob, n, replacement=True)
+    #     neg_idx = torch.multinomial(neg_prob, n, replacement=True)
+
+    #     mem_pts_scr_offset = pos_idx + torch.arange(len(relevance)).unsqueeze(1).to(pos_idx) * len(self._store)
+    #     return pd[pos_idx.cpu()].to(self.out_device), \
+    #         pd[neg_idx.cpu()].to(self.out_device), \
+    #         mem_pts_scr.reshape(-1, *mem_pts_scr.shape[2:])[mem_pts_scr_offset], \
+    #         relevance.reshape(-1, *relevance.shape[2:])[mem_pts_scr_offset], \
+    #         relevance.reshape(-1, *relevance.shape[2:])[neg_idx + torch.arange(len(relevance)).unsqueeze(1).to(neg_idx) * len(self._store)], \
+    #         pos_idx, neg_idx
+    # ################################################################
+    # augmented sample
+    def sample_frames(self, n_anchor, n_recent=0, n_pair=1, n_try=5):
         n_frame = len(self._store)
-        # frame_idx = torch.multinomial(torch.arange(n_frame, dtype=torch.float32), n, replacement=(n_frame < n))
-        frame_idx = torch.arange(n_frame - n, n_frame)
-        return [item.to(self.out_device) for item in self._store[frame_idx]]
+        for _ in range(n_try):
+            # combination of most recent frames and random frames prior to those
+            ank_idx = torch.cat([
+                torch.randint(n_frame - n_recent, (n_anchor - n_recent,)),
+                torch.arange(n_frame - n_recent, n_frame)])
+            relevance = self._rel[ank_idx, :self.n_frame]
+            # sample
+            cutoff = relevance.where(
+                relevance > 0, torch.tensor(np.nan).to(relevance)).nanquantile(
+                torch.tensor([0.1, 0.9]).to(relevance),
+                dim=1, keepdim=True)
+            if cutoff.isfinite().all():
+                break
+        else:
+            return [[None] * 3] * 2 + [[None] * 2]
 
-    def store(self, frame_desc, point_desc, pos=None):
-        self._store.store(frame_desc.cpu(), point_desc.cpu(), pos.cpu())
+        pos_prob = (relevance >= cutoff[1].clamp(max=0.4)).to(torch.float)
+        neg_prob = (relevance <= cutoff[0]).to(torch.float)
+        pos_idx = torch.multinomial(pos_prob, n_pair, replacement=True)
+        neg_idx = torch.multinomial(neg_prob, n_pair, replacement=True)
 
-    def swap(self, name, device='cpu'):
-        if self._store is not None:
-            if name == self._store.name:
-                return
-            else:
-                torch.save(self._store, os.path.join(self.swap_dir, '%s.pth' % self._store.name))
-        load_path = os.path.join(self.swap_dir, '%s.pth' % name)
-        self._store = torch.load(load_path) if os.path.isfile(load_path) else \
-            KeyFrameStore(self.D_point, self.D_frame, self.n_fea, name).to(device)
-        self._store = KeyFrameStore(self.D_point, self.D_frame, self.n_fea, name).to(device)
+        ank_batch = self._store[ank_idx]
+        pos_batch = self._store[pos_idx]
+        neg_batch = self._store[neg_idx]
+
+        return (ank_idx, pos_idx, neg_idx), \
+            (ank_batch, pos_batch, neg_batch), \
+            (relevance.gather(1, pos_idx), relevance.gather(1, neg_idx))
+            ################################################################
+
+    def store_fifo(self, pos, proj_fn, **properties):
+        frame_addr = (torch.arange(len(pos)) + self.n_frame) % self.capacity
+        self._store.store(frame_addr, pos=pos, **properties)
+        self.n_frame = len(self._store)
+        self.update_rel(frame_addr, proj_fn)
+
+    def swap(self, name):
+        if name in self._states:
+            self._store, self._rel = self._states[name]
+        else:
+            self._store = SparseStore(name=name, out_device=self.out_device, max_cap=self.capacity, **self.property_spec)
+            self._rel = torch.zeros(self.capacity, self.capacity, device=self.out_device).fill_(np.nan)
+            self._states[name] = self._store, self._rel
+        self.n_frame = len(self._store)
+        #     else:
+        #         torch.save(self._store, os.path.join(self.swap_dir, '%s.pth' % self._store.name))
+        # load_path = os.path.join(self.swap_dir, '%s.pth' % name)
+        # self._store = torch.load(load_path) if os.path.isfile(load_path) else \
+        #     KeyFrameStore(self.D_point, self.D_frame, self.n_fea, name).to(device)
     
+    def update_rel(self, frame_idx, proj_fn):
+        old_pos = self._store[torch.arange(self.n_frame), ['pos']]['pos'].to(self.out_device)
+        relevance = proj_fn(old_pos) # (n_frame, B)
+        self._rel[:self.n_frame, frame_idx.to(self._rel.device)] = relevance
+        self._rel[frame_idx.to(self._rel.device), :self.n_frame] = relevance.T
+
+    # def get_rel(self, idx):
+    #     # i0, i1, ..., i(i-1), ii, (i+1)i ..., ni
+    #     return torch.stack([torch.cat([self._rel[i, :i + 1], self._rel[i + 1:self.n_frame, i].T]) for i in idx])
+    def save(self, path, overwrite=True):
+        save_path = rectify_savepath(path, overwrite=overwrite)
+        torch.save(self, save_path)
+        print('Saved memory: %s' % save_path)
+
+    
+    def load(self, path):
+        loaded_mem = torch.load(path)
+        for attr in self.STATE_DICT:
+            setattr(self, attr, getattr(loaded_mem, attr))
+        print('Loaded memory: %s' % path)
+
     def __len__(self):
         return self._store.__len__()
 
-    def forward(self):
-        raise NotImplementedError()
+    def envs(self):
+        return self._states.keys()
 
 
-class KeyFrameStore(nn.Module):
-    eps = 1e-3
-    init_cap = 2000000
-    init_kf_cap = 8000
+class SparseStore():
 
-    def __init__(self, D_point, D_frame, num_fea, name='store', merge_radius=1e-2):
+    def __init__(self, name='store', max_cap=2000, device='cpu', out_device='cuda', **property_spec):
         super().__init__()
         self.name = name
-        self.n_frame, self.n_desc, self.n_point = 0, 0, 0
-        self.D_point, self.D_frame = D_point, D_frame
+        self.buf = {}
+        for name, specs in property_spec.items():
+            shape = specs['shape']
+            cap = specs.get('max_cap', max_cap)
+            dtype = specs.get('dtype', torch.float32)
+            dev = specs.get('device', device)
+            def_val = specs.get('default', 0)
 
-        self.register_buffer('_fd', (torch.zeros(self.init_kf_cap, D_frame).fill_(np.nan)))
-        self.register_buffer('_pd', torch.zeros(self.init_cap, D_point).fill_(np.nan))
-        self.register_buffer('_kf_desc_idx', torch.LongTensor(self.init_kf_cap, num_fea).fill_(-1))
+            self.buf[name] = {
+                'shape': shape, 'capacity': cap, 'dtype': dtype, 'device': dev, 'default': def_val, 'values': {}}
 
-        self.merge_radius = merge_radius
-        self.merge = False
-        self._pos_kf_lookup = {}
-        self.register_buffer('_pos', torch.zeros(self.init_cap, 3).fill_(np.inf))
-        self.register_buffer('_kf_pos_idx', torch.LongTensor(self.init_kf_cap, num_fea).fill_(-1))
+        self.size = 0
+        self.out_device = out_device
 
     @torch.no_grad()
-    def store(self, frame_desc, point_desc, pos=None):
-        fd_addr = torch.arange(self.n_frame, self.n_frame + len(frame_desc))
-        self._fd[fd_addr] = frame_desc
-        self.n_frame += len(fd_addr)
+    def store(self, _idx=None, **values):
+        # sanity check
+        batch = []
+        for name, val in values.items():
+            prop_shape = self.buf[name]['shape']
+            assert prop_shape == val.shape[-len(prop_shape):]
+            batch.append(val.shape[:-len(prop_shape)])
+        assert all(b == batch[0] for b in batch)
 
-        self._store_desc(point_desc, fd_addr)
-        if pos is not None:
-            self._store_pos(pos, fd_addr)
+        # single or batch mode
+        if len(batch[0]) == 0:
+            _idx = torch.tensor(_idx if _idx is not None else self.size, dtype=torch.long)
+        else:
+            batch_size = int(batch[0][0])
+            _idx = torch.tensor(_idx, dtype=torch.long) if _idx is not None else torch.arange(batch_size) + self.size
+            assert batch_size == len(_idx)
 
-    def _store_desc(self, pd, fd_addr):
-        B, N, _ = pd.shape
-        pd = pd.reshape(-1, self.D_point)
-        pd_idx = torch.arange(self.n_desc, self.n_desc + len(pd)).to(self._kf_desc_idx)
-        self._pd[pd_idx] = pd
-        self.n_desc += len(pd)
-        self._kf_desc_idx[fd_addr] = pd_idx.reshape(B, N)
+        for name, val in values.items():
+            self._store(self.buf[name], _idx, val)
 
-    def _store_pos(self, pos, fd_addr):
-        B, N, _ = pos.shape
-        pos_addr = torch.LongTensor(B, N).fill_(-1).to(self._kf_pos_idx)
-        pos = pos.reshape(B * N, 3)
-        # merge points within radius
-        merged_idx = None
-        if self.merge:
-            near_pairs = tc.radius(self._pos, pos, self.merge_radius)
-            if near_pairs.numel() > 0:
-                mem_addr, new_idx = near_pairs
-                # make sure no two new points merge into the same mem point
-                mem_addr, _, new_idx = self._groupby(mem_addr, new_idx)
-                merged_idx, group_size, w_addr = self._groupby(new_idx, mem_addr)
-                self._merge_points(mem_addr, group_size, w_addr, pos[merged_idx])
-                pos_addr[merged_idx // N, merged_idx % N] = w_addr
-        if merged_idx is None:
-            merged_idx = torch.empty(0).to(pos_addr)
-        # write unmerged points
-        unmerged_idx = torch.tensor(list(set(np.arange(len(pos))) - set(merged_idx.tolist()))).to(pos_addr)
-        w_addr = torch.arange(self.n_point, self.n_point + len(unmerged_idx)).to(pos_addr)
-        self._pos[w_addr] = pos[unmerged_idx]
-        self.n_point += len(unmerged_idx)
-        pos_addr[unmerged_idx // N, unmerged_idx % N] = w_addr
-        self._link_points(pos_addr, fd_addr)
+        self.size = max(len(buf['values']) for buf in self.buf.values())
 
-    def _merge_points(self, src_addr, group_size, dst_addr, new_pos=None, alpha=0.9):
-        updated_pos = self._pos[src_addr] * alpha + new_pos * (1 - alpha) \
-            if new_pos is not None else self._pos[src_addr]
-        # average within group and write back
-        self._pos[dst_addr] = torch.cat([up.mean(dim=0, keep_dim=True) for up in updated_pos.split(group_size)])
-        # combine keyframe references
-        for sas, da in zip(src_addr.split(group_size), dst_addr.split(group_size)):
-            self._pos_kf_lookup[da] = sum([self._pos_kf_lookup.pop(sa)
-                                           for sa in sas.items() if sa != da], self._pos_kf_lookup[da])
-            self._kf_pos_idx[list(zip(*self._pos_kf_lookup[da]))] = da
+    def _store(self, buf, idx, value):
+        value = value.to(buf['device'])
+        if len(idx.shape) == 0:
+            buf['values'][int(idx)] = value
+        else:
+            for i, val in zip(idx.tolist(), value.to(buf['device'], non_blocking=True)):
+                buf['values'][int(i)] = val
 
-    def _link_points(self, pos_addr, fd_addr):
-        self._kf_pos_idx[fd_addr] = pos_addr
-        for pas, fa in zip(pos_addr.tolist(), fd_addr.tolist()):
-            for pa in pas:
-                self._pos_kf_lookup[pa] = [fa]
+    def _get(self, buf, idx):
+        if int(idx) in buf['values']:
+            return buf['values'][int(idx)]
+        else:
+            return torch.zeros(buf['shape'], dtype=buf['dtype'], device=buf['device']).fill_(buf['default'])
 
-    @staticmethod
-    def _groupby(x, *joint_select):
-        val, cnt = x.unique_consecutive(return_counts=True)
-        repr_idx = cnt.cumsum() - 1
-        return (val, cnt) + tuple([js[repr_idx] for js in joint_select])
-
-    def __getitem__(self, i):
-        return self._fd[i], self._pd[self._kf_desc_idx[i]], self._pos[self._kf_pos_idx[i]]
+    @torch.no_grad()
+    def __getitem__(self, idx):
+        idx, include = idx if isinstance(idx, tuple) else (idx, self.buf.keys())
+        idx, ret = torch.tensor(idx), {name: [] for name in self.buf if name in include}
+        if len(idx.shape) == 0:
+            for name, buf in self.buf.items():
+                ret[name].append(self._get(buf, idx))
+            return {name: tensors[0] for name, tensors in ret.items()}
+        else:
+            for name in ret:
+                for i in idx.flatten():
+                    ret[name].append(self._get(self.buf[name], i))
+            # make returned tensor respect shape of index
+            return {name: torch.stack(tensors).reshape(*idx.shape, *tensors[0].shape).to(self.out_device, non_blocking=True)
+                    for name, tensors in ret.items()}
 
     def __len__(self):
-        return self.n_frame
-
-    def forward(self):
-        raise NotImplementedError()
+        return self.size
 
 
-class PairwiseCosine(nn.Module):
-    def __init__(self, dim=-1, eps=1e-7):
-        super().__init__()
-        self.dim, self.eps = dim, eps
-        self.eqn = 'md,nd->mn'
+def test_store():
+    store = SparseStore(pos={'shape': (12, 3), 'device': 'cuda', 'default': np.nan}, idx={'shape': (1,), 'dtype': torch.long})
+    pos = torch.arange(360).reshape(10, 12, 3).to(torch.float)
+    idx = torch.arange(10).reshape(10, 1)
+    store.store(0, pos=pos[0], idx=idx[0])
+    store.store(pos=pos[1:3], idx=idx[1:3])
+    store.store(torch.arange(1, 4).cuda(), pos=pos[4:7], idx=idx[4:7])
+    print(len(store))
+    print(store[1])
+    print(store[[0, 2]])
+    print(store[[[0], [4]]])
 
-    def forward(self, x, y):
-        xx = x.norm(dim=self.dim).unsqueeze(-1)
-        yy = y.norm(dim=self.dim).unsqueeze(-2)
-        xy = torch.einsum(self.eqn, x, y)
-        return xy / (xx * yy).clamp(min=self.eps)
 
-
-if __name__ == "__main__":
-    """Test"""
-    B, N, D = 8, 250, 256
-    kfs = KeyFrameStore(256, 256, 250).cuda()
-    kfs.store(torch.randn(B, N, D).cuda(), torch.randn(B, D).cuda(), torch.randn(B, N, 3).cuda())
-    kfs.store(torch.randn(B, N, D).cuda(), torch.randn(B, D).cuda(), torch.randn(B, N, 3).cuda())
+if __name__ == '__main__':
+    test_store()

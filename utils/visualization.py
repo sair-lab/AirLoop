@@ -10,6 +10,7 @@ from matplotlib import cm
 import matplotlib.colors as mc
 from matplotlib import pyplot as plt
 import kornia.geometry.conversions as C
+from matplotlib.animation import FuncAnimation
 
 
 class Visualizer():
@@ -28,6 +29,8 @@ class Visualizer():
             self.displayer = TBDisplayer(**kwargs)
         elif display == 'video':
             self.displayer = VideoFileDisplayer(**kwargs)
+        elif display == 'gif':
+            self.displayer = GIFFileDisplayer(**kwargs)
 
     def show(self, images, points=None, color='red', nrow=4, values=None, vmin=None, vmax=None, name=None, step=0):
         b, c, h, w = images.shape
@@ -51,7 +54,7 @@ class Visualizer():
             self.displayer.display(disp_name, grid.numpy(), step)
         else:
             for i, img in enumerate(images):
-                self.displayer.display(disp_name + str(i), img, step)
+                self.displayer.display(disp_name, img, step)
 
     def showmatch(self, imges1, points1, images2, points2, color='blue', values=None, vmin=None, vmax=None, name=None, step=0, nrow=2):
         match_pairs = []
@@ -145,6 +148,36 @@ class VideoFileDisplayer(VisDisplayer):
     def close(self):
         for wn in self.writer:
             self.writer[wn].release()
+
+
+class GIFFileDisplayer(VisDisplayer):
+    def __init__(self, save_dir=None, framerate=10, fig_size=None):
+        if save_dir is None:
+            from datetime import datetime
+            current_time = datetime.now().strftime('%b%d_%H-%M-%S')
+            self.save_dir = os.path.join('.', 'vidout', current_time)
+        else:
+            self.save_dir = save_dir
+        self.framerate, self.fig_size = framerate, fig_size
+        self.figure = {}
+
+    def display(self, name, frame, step=0):
+        if name not in self.figure:
+            os.makedirs(self.save_dir, exist_ok=True)
+            self.figure[name] = []
+        self.figure[name].append(frame)
+
+    def close(self):
+        for name, frames in self.figure.items():
+            def _get_frame(i):
+                im.set_array(frames[i + 1])
+                return im,
+            fig = plt.figure(figsize=self.fig_size)
+            plt.axis('off')
+            im = plt.imshow(frames[0], animated=True, aspect='auto')
+            plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
+            anim = FuncAnimation(fig, _get_frame, len(frames) - 1, blit=True)
+            anim.save(os.path.join(self.save_dir, '%s.gif' % name), fps=self.framerate)
 
 
 def matches(img1, pts1, img2, pts2, colors, circ_radius=3, thickness=1):
