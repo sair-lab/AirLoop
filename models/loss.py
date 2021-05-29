@@ -35,6 +35,7 @@ class MemReplayLoss():
         self.gd_match = GlobalDescMatchLoss(n_triplet=self.n_triplet, n_pair=self.n_pair, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.mas = MASLoss(self.memory, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.args = args
 
     def __call__(self, net, img, depth_map, pose, K, env):
         device = img.device
@@ -77,18 +78,17 @@ class MemReplayLoss():
         gd_match = self.beta[2] * self.gd_match(gd)
         loss = cornerness + desc_match + gd_match
 
-        if len(self.memory.envs()) > 1:
+        if self.args.mas and len(self.memory.envs()) > 1:
             mas = self.beta[3] * self.mas(net, env)
             loss += mas
 
         if self.writer is not None:
             n_iter = self.counter.steps if self.counter is not None else 0
             self.writer.add_scalars('Loss', {'cornerness': cornerness,
-                                             'mas': mas,
                                              'desc': desc_match,
                                              'global': gd_match,
                                              'all': loss}, n_iter)
-            if len(self.memory.envs()) > 1:
+            if self.args.mas and len(self.memory.envs()) > 1:
                 self.writer.add_scalars('Loss', {'mas': mas}, n_iter)
             self.writer.add_histogram('Misc/RelN', neg_rel, n_iter)
             self.writer.add_histogram('Misc/RelP', pos_rel, n_iter)

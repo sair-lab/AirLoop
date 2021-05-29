@@ -142,6 +142,7 @@ if __name__ == "__main__":
     parser.add_argument("--save", type=str, default=None, help="model file to save")
     parser.add_argument("--save-freq", type=int, default=33558, help="model saving frequency")
     parser.add_argument("--mem-save", type=str, default=None, help="memory save path")
+    parser.add_argument("--mas", action='store_true', help="enable MAS")
     parser.add_argument("--gd-dim", type=int, default=1024, help="global descriptor dimension")
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
     parser.add_argument("--feat-num", type=int, default=500, help="feature number")
