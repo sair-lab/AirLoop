@@ -99,7 +99,7 @@ def main(args):
 
     train_loader, eval_loader, img_res = get_datasets(args)
 
-    model = FeatureNet(args.feat_dim, args.feat_num, args.gd_dim).to(args.device)
+    model = FeatureNet(img_res, args.feat_dim, args.feat_num, args.gd_dim).to(args.device)
     if args.load:
         load_model(model, args.load)
     if not args.no_parallel:

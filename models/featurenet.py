@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+from functools import partial
+
+import numpy as np
+
 import math
 import torch
 import torch.nn as nn
@@ -138,42 +142,6 @@ class BatchNorm2dwC(nn.Module):
         return self.bn(x.unsqueeze(1)).squeeze(1)
 
 
-class ScoreHead(nn.Module):
-    def __init__(self, in_scale):
-        super().__init__()
-        self.scores_vgg = nn.Sequential(make_layer(256, 128), make_layer(128, 64, bn=BatchNorm2dwC))
-        self.scores_img = nn.Sequential(make_layer(3, 8), make_layer(8, 16, bn=BatchNorm2dwC),
-            PixelUnshuffle(downscale_factor=in_scale))
-        self.combine = nn.Sequential(
-            make_layer(64 + 16 * in_scale**2, in_scale**2 + 1, bn=BatchNorm2dwC, activation=nn.Softmax(dim=1)),
-            IndexSelect(dim=1, index=torch.arange(in_scale**2)),
-            nn.PixelShuffle(upscale_factor=in_scale),
-            ConstantBorder(border=4, value=0))
-
-    def forward(self, images, features):
-        scores_vgg, scores_img = self.scores_vgg(features), self.scores_img(images)
-        return self.combine(torch.cat([scores_vgg, scores_img], dim=1))
-
-
-class DescriptorHead(nn.Module):
-    def __init__(self, feat_dim, feat_num, sample_pass):
-        super().__init__()
-        self.feat_dim, self.feat_num, self.sample_pass = feat_dim, feat_num, sample_pass
-
-        self.descriptor = nn.Sequential(
-            make_layer(256, self.feat_dim),
-            make_layer(self.feat_dim, self.feat_dim, bn=None, activation=None))
-        self.sample = nn.Sequential(GridSample(), nn.BatchNorm1d(self.feat_num))
-        self.residual = nn.Sequential(make_layer(3, 128, kernel_size=9, padding=4), make_layer(128, self.feat_dim))
-
-    def forward(self, images, features, points, scores):
-        descriptors, residual = self.descriptor(features), self.residual(images)
-        n_group = 1 + self.sample_pass if self.training else 1
-        descriptors, residual = _repeat_flatten(descriptors, n_group), _repeat_flatten(residual, n_group)
-        descriptors = self.sample((descriptors, points)) + self.sample((residual, points))
-        return descriptors
-
-
 class AttnFC(nn.Module):
     def __init__(self, feat_dim, desc_dim, feat_num=300, n_heads=4, n_pass=4, drop=0.1):
         super().__init__()
@@ -265,18 +233,123 @@ class NetVLAD(nn.Module):
         return out, None
 
 
+class FPNEncoder(nn.Module):
+    def __init__(self, model, ckpts):
+        super().__init__()
+        self.encoder = model
+        for (name, _, _) in ckpts:
+            getattr(self.encoder, name).register_forward_hook(partial(self._save_feature, name))
+        self._saved_features = {}
+
+    def forward(self, x):
+        _saved_features = self._saved_features.setdefault(x.device, {})
+
+        self.encoder(x)
+        features = _saved_features.copy()
+        _saved_features.clear()
+        return features
+
+    def _save_feature(self, name, mod, inp, out):
+        self._saved_features[inp[0].device][name] = out
+
+
+class FPNDecoder(nn.Module):
+    def __init__(self, ckpts, res, out_channel):
+        super().__init__()
+        self.ckpts = list(reversed(ckpts))
+        res = np.array(res)
+
+        self.decoder = nn.ModuleList()
+        for i, ((_, in_chan, in_sc), (_, out_chan, out_sc)) in enumerate(zip(self.ckpts[:-1], self.ckpts[1:])):
+            cat_chan = 0 if i == 0 else self.ckpts[i][1]
+            in_res, out_res = np.ceil(res / in_sc).astype(int), np.ceil(res / out_sc).astype(int)
+            out_pad = out_res - 1 - (in_res - 1) * 2
+            self.decoder.append(nn.Sequential(
+                *(make_layer(in_chan + cat_chan, out_chan, bn=nn.GroupNorm(min(out_chan // 4, 32), out_chan)) +
+                  make_layer(out_chan, out_chan, conv=nn.ConvTranspose2d, stride=2, output_padding=tuple(out_pad), bn=nn.GroupNorm(min(out_chan // 4, 32), out_chan)))
+            ))
+        self.decoder.append(nn.Sequential(
+            *make_layer(self.ckpts[-1][1] * 2, out_channel, kernel_size=1, padding=0, activation=nn.Identity())))
+
+    def forward(self, features):
+        fp = [features[ckpt] for ckpt, _, _ in self.ckpts]
+
+        b, _, h, w = fp[0].shape
+        x = torch.zeros(b, 0, h, w).to(fp[0])
+        for dec, f in zip(self.decoder, fp):
+            x = dec(torch.cat([x, f], dim=1))
+        return x
+
+
+class FeatureNet_(nn.Module):
+    CKPTS = [
+        ('fullscale', 32, 1),
+        ('conv1', 64, 2),
+        ('layer1', 256, 4),
+        ('layer2', 512, 8),
+        ('layer3', 1024, 16),
+        ('layer4', 2048, 32)
+    ]
+
+    def __init__(self, n_features, res, feat_dim):
+        super().__init__()
+        self.n_features = n_features
+
+        # remove extra modules and hook up full-scale feature conv
+        resnet = models.resnet50(pretrained=True)
+        resnet.avgpool = resnet.fc = nn.Identity()
+        resnet.fullscale = nn.Sequential(*make_layer(3, 32))
+        def _fullscale_fwd(_resnet, inp):
+            _resnet.fullscale(inp[0])
+        resnet.register_forward_pre_hook(_fullscale_fwd)
+
+        self.encoder = FPNEncoder(resnet, self.CKPTS)
+        self.decoder = FPNDecoder(self.CKPTS, res, 1)
+        self.trans = nn.ModuleList(
+            [nn.Sequential(*make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)), *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch))) for (_, ch, _) in self.CKPTS])
+        self.proj = nn.Sequential(
+            nn.Linear(sum(ckpt[1] for ckpt in self.CKPTS), 1024), nn.ReLU(),
+            nn.Linear(1024, 512), nn.ReLU(),
+            nn.Linear(512, feat_dim)
+        )
+        self.const_boarder = ConstantBorder(border=4, value=0)
+
+        self.grid_sample = GridSample()
+
+    def forward(self, img):
+        b, _, h, w = img.shape
+
+        feature_maps = self.encoder(img)
+        score_map = self.decoder(feature_maps)
+
+        feature_maps = [trans(feature_maps[ckpt[0]]) for ckpt, trans in zip(self.CKPTS, self.trans)]
+        score_map = self.softnms(score_map, (5, 5))
+
+        scores, points = self.const_boarder(nms.nms2d(score_map, (5, 5))).view(b, -1, 1).topk(self.n_features, dim=1)
+        points = torch.cat((points % w, points // w), dim=-1)
+        points = C.normalize_pixel_coordinates(points, h, w)
+
+        raw_features = torch.cat([self.grid_sample((feature, points)) for feature in feature_maps], dim=-1)
+        return points, score_map, scores, self.proj(raw_features)
+
+    def softnms(self, x, ks=(3, 3)):
+        b, c, h, w = x.shape
+        numel = ks[0] * ks[1]
+        kernel = torch.eye(numel).reshape(numel, 1, *ks).repeat(c, 1, 1, 1).to(x)
+        pad = ((ks[1] - 1) // 2, (ks[1] - 1) // 2, (ks[0] - 1) // 2, (ks[0] - 1) // 2)
+        exp_x = torch.exp(x)
+        unfolded = F.conv2d(F.pad(exp_x, pad, mode='constant', value=0), kernel, stride=1, groups=c).reshape(b, c, -1, h, w)
+        # trashbin
+        unfolded = torch.cat([unfolded, torch.ones(b, c, 1, h, w).to(unfolded)], dim=2)
+        return torch.sigmoid(x) * exp_x / unfolded.sum(dim=2)
+
+
 
 class FeatureNet(models.VGG):
-    def __init__(self, feat_dim=256, feat_num=500, gd_dim=1024, sample_pass=0):
+    def __init__(self, res=(240, 320), feat_dim=256, feat_num=500, gd_dim=1024, sample_pass=0):
         super().__init__(models.vgg13().features)
         self.feat_dim, self.feat_num, self.sample_pass = feat_dim, feat_num, sample_pass
-        # Only adopt the first 15 layers of pre-trained vgg13. Feature Map: (512, H/8, W/8)
-        self.load_state_dict(models.vgg13(pretrained=True).state_dict())
-        self.features = nn.Sequential(*list(self.features.children())[:15])
-        del self.classifier
-
-        self.scores = ScoreHead(8)
-        self.descriptors = DescriptorHead(feat_dim, feat_num, sample_pass)
+        self.features = FeatureNet_(self.feat_num, res, feat_dim)
         self.global_desc = AttnFC(feat_dim, gd_dim, n_pass=4)
         # !full
         self.graph = nn.Identity()
@@ -320,41 +393,18 @@ class FeatureNet(models.VGG):
 
         B, _, H, W = inputs.shape
 
-        features = self.features(inputs)
-
-        pointness = self.scores(inputs, features)
-
-        scores, points = self.nms(pointness).view(B, -1, 1).topk(self.feat_num, dim=1)
-
-        points = torch.cat((points % W, points // W), dim=-1)
-
-        n_group = 1
-        # if self.training:
-        #     n_group += self.sample_pass
-        #     scores_flat_dup = _repeat_flatten(pointness.view(B, H * W), self.sample_pass)
-        #     points_rand = torch.multinomial(torch.ones_like(scores_flat_dup), self.feat_num)
-        #     scores_rand = torch.gather(scores_flat_dup, 1, points_rand).unsqueeze(-1)
-        #     points_rand = torch.stack((points_rand % W, points_rand // W), dim=-1)
-        #     points = self._append_group(points_rand, self.sample_pass, points).reshape(B * n_group, self.feat_num, 2)
-        #     scores = self._append_group(scores_rand, self.sample_pass, scores).reshape(B * n_group, self.feat_num, 1)
-
-        points = C.normalize_pixel_coordinates(points, H, W)
-
-        descriptors = self.descriptors(inputs, features, points, scores)
-
-        rand_end = (n_group - 1) * B
+        points, pointness, scores, descriptors = self.features(inputs)
 
         # fea = features.permute(0, 2, 3, 1).reshape(B, -1, self.feat_dim)
 
         descriptors = descriptors + self.pos_enc(points)
-        descriptors = torch.cat([descriptors[:rand_end], self.graph(descriptors[rand_end:])])
+        descriptors = self.graph(descriptors)
 
-        fea = descriptors[rand_end:]
-        gd, gd_locs = self.global_desc(fea)
+        gd, gd_locs = self.global_desc(descriptors)
         # fea = fea[:, ::4]
 
-        N = n_group * self.feat_num
-        return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), ((gd, gd_locs) if self.training else gd), fea
+        N = self.feat_num
+        return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), ((gd, gd_locs) if self.training else gd), None
         # return fea[:, ::4, :], points.reshape(B, N, 2), pointness, scores.reshape(B, N), gd, gd_locs
 
     @staticmethod
@@ -382,11 +432,11 @@ class FeatureNet(models.VGG):
     # # !dino
 
 
-def make_layer(in_chan, out_chan, kernel_size=3, stride=1, padding=1, bn=nn.BatchNorm2d, activation=nn.ReLU()):
-    modules = [nn.Conv2d(in_chan, out_chan, kernel_size, stride, padding)] + \
-        ([bn(out_chan)] if bn is not None else []) + \
+def make_layer(in_chan, out_chan, kernel_size=3, stride=1, padding=1, conv=nn.Conv2d, bn=None, activation=nn.ReLU(), **kwargs):
+    modules = [conv(in_chan, out_chan, kernel_size, stride, padding, **kwargs)] + \
+        ([bn] if bn is not None else []) + \
         ([activation] if activation is not None else [])
-    return nn.Sequential(*modules)
+    return modules
 
 
 def _repeat_flatten(x, n):
