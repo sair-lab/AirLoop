@@ -97,7 +97,7 @@ def main(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    train_loader, eval_loader = get_datasets(args)
+    train_loader, eval_loader, img_res = get_datasets(args)
 
     model = FeatureNet(args.feat_dim, args.feat_num, args.gd_dim).to(args.device)
     if args.load:

@@ -26,8 +26,9 @@ def get_datasets(args):
 
         train_sampler = AirSampler(train_data, args.batch_size, shuffle=shuffle, overlap=False)
         eval_sampler = AirSampler(eval_data, args.batch_size, shuffle='none', overlap=False)
+        res = tartanair.augment.img_size
 
-        return make_loader(train_data, train_sampler, args), make_loader(eval_data, eval_sampler, args)
+        return make_loader(train_data, train_sampler, args), make_loader(eval_data, eval_sampler, args), res
 
 
 def make_loader(dataset, sampler, args):
