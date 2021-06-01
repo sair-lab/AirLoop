@@ -143,10 +143,10 @@ class BatchNorm2dwC(nn.Module):
 
 
 class AttnFC(nn.Module):
-    def __init__(self, feat_dim, desc_dim, feat_num=300, n_heads=4, n_pass=4, drop=0.1):
+    def __init__(self, feat_dim, desc_dim, emb_dim=128, feat_num=300, n_heads=4, n_pass=4, drop=0.1):
         super().__init__()
         self.attn = nn.Sequential(*[
-            TransformerLayer(feat_dim, n_heads=n_heads)
+            TransformerLayer(feat_dim, emb_dim, n_heads=n_heads)
             for _ in range(n_pass)])
         # self.attn = nn.ModuleList([
         #     nn.MultiheadAttention(feat_dim, n_heads)
@@ -237,8 +237,9 @@ class FPNEncoder(nn.Module):
     def __init__(self, model, ckpts):
         super().__init__()
         self.encoder = model
+        module_dict = dict(self.encoder.named_modules())
         for (name, _, _) in ckpts:
-            getattr(self.encoder, name).register_forward_hook(partial(self._save_feature, name))
+            module_dict[name].register_forward_hook(partial(self._save_feature, name))
         self._saved_features = {}
 
     def forward(self, x):
@@ -330,7 +331,7 @@ class FeatureNet_(nn.Module):
         points = C.normalize_pixel_coordinates(points, h, w)
 
         raw_features = torch.cat([self.grid_sample((feature, points)) for feature in feature_maps], dim=-1)
-        return points, score_map, scores, self.proj(raw_features)
+        return points, score_map, scores, self.proj(raw_features), raw_features
 
     def softnms(self, x, ks=(3, 3)):
         b, c, h, w = x.shape
@@ -350,7 +351,9 @@ class FeatureNet(models.VGG):
         super().__init__(models.vgg13().features)
         self.feat_dim, self.feat_num, self.sample_pass = feat_dim, feat_num, sample_pass
         self.features = FeatureNet_(self.feat_num, res, feat_dim)
-        self.global_desc = AttnFC(feat_dim, gd_dim, n_pass=4)
+        self.gd_indim = self.features.CKPTS[-1][1]
+        self.global_desc = GeM(self.gd_indim, gd_dim)
+        # self.global_desc = AttnFC(self.gd_indim, gd_dim, emb_dim=256, n_pass=2)
         # !full
         self.graph = nn.Identity()
         # self.graph = nn.Sequential(
@@ -377,6 +380,10 @@ class FeatureNet(models.VGG):
             nn.Linear(2, 256), nn.ReLU(),
             nn.Linear(256, 256), nn.ReLU(),
             nn.Linear(256, self.feat_dim))
+        self.pos_enc_gd = nn.Sequential(
+            nn.Linear(2, 256), nn.ReLU(),
+            nn.Linear(256, 1024), nn.ReLU(),
+            nn.Linear(1024, self.gd_indim))
         self.nms = nms.NonMaximaSuppression2d((5, 5))
         # self.matcher = AttnMatcher(feat_dim)
 
@@ -393,14 +400,14 @@ class FeatureNet(models.VGG):
 
         B, _, H, W = inputs.shape
 
-        points, pointness, scores, descriptors = self.features(inputs)
+        points, pointness, scores, descriptors, raw_features = self.features(inputs)
 
         # fea = features.permute(0, 2, 3, 1).reshape(B, -1, self.feat_dim)
 
-        descriptors = descriptors + self.pos_enc(points)
-        descriptors = self.graph(descriptors)
+        # descriptors = descriptors + self.pos_enc(points)
+        # descriptors = self.graph(descriptors)
 
-        gd, gd_locs = self.global_desc(descriptors)
+        gd, gd_locs = self.global_desc(raw_features[:, :, -self.gd_indim:] + self.pos_enc_gd(points))
         # fea = fea[:, ::4]
 
         N = self.feat_num

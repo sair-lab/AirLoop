@@ -30,7 +30,7 @@ class MemReplayLoss():
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
         self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.n_triplet, self.n_recent, self.n_pair = 8, 0, 1
+        self.n_triplet, self.n_recent, self.n_pair = 8, 2, 1
         self.min_sample_size = 32
         self.gd_match = GlobalDescMatchLoss(n_triplet=self.n_triplet, n_pair=self.n_pair, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
@@ -319,7 +319,7 @@ class DiscriptorMatchLoss(nn.Module):
 
         loss_match, loss_miss = self.nll(sig_match, s_match, alpha_match), self.nll(sig_miss, s_miss, alpha_miss)
 
-        loss_miss, loss_miss_idx = loss_miss.topk(match.sum() * 2)
+        loss_miss, loss_miss_idx = loss_miss.topk(match.sum() * 8)
 
         if self.debug and n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
             B, *shape = images.shape
