@@ -35,13 +35,14 @@ class AirAugment(nn.Module):
 
     def forward(self, image, K, depth=None):
         if isinstance(image, Image.Image):
+            in_size = np.array(image.size[::-1])
             image = self.resize_totensor(image)
             depth = depth if depth is None else self.resize_totensor(depth)
         elif isinstance(image, torch.Tensor):
+            in_size = np.array(image.shape[1:])
             image = self.resize_totensor.transforms[0](image)
             depth = depth if depth is None else self.resize_totensor.transforms[0](depth)
 
-        in_size = np.array(image.shape[1:])
         center, scale, angle = in_size/2, self.img_size/in_size, 0
 
         transform = np.random.choice(np.arange(len(self.p)), p=self.p)
