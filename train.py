@@ -98,12 +98,15 @@ def main(args):
     random.seed(args.seed)
 
     train_loader, eval_loader, img_res = get_datasets(args)
+    if args.devices is None:
+        args.devices = ['cuda:%d' % i for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else ['cpu']
+    args.device = args.devices[0]
 
     model = FeatureNet(img_res, args.feat_dim, args.feat_num, args.gd_dim).to(args.device)
     if args.load:
-        load_model(model, args.load)
+        load_model(model, args.load, device=args.device)
     if not args.no_parallel:
-        model = nn.DataParallel(model)
+        model = nn.DataParallel(model, device_ids=args.devices)
 
     writer = None
     if args.log_dir is not None:
@@ -128,7 +131,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Feature Graph Networks')
     parser.add_argument("--task", type=str, choices=['train-envseq', 'train-envshuffle', 'train-seqshuffle', 'train-allshuffle', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
     parser.add_argument("--no-parallel", action='store_true', help="DataParallel")
-    parser.add_argument("--device", type=str, default='cuda:0', help="cuda or cpu")
+    parser.add_argument("--devices", type=str, nargs='+', default=None, help="Available devices")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
     parser.add_argument("--include", type=str, default=None, help="sequences to include")
     parser.add_argument("--exclude", type=str, default=None, help="sequences to exclude")
