@@ -284,12 +284,11 @@ class FPNDecoder(nn.Module):
 
 class FeatureNet_(nn.Module):
     CKPTS = [
-        ('fullscale', 32, 1),
-        ('conv1', 64, 2),
-        ('layer1', 256, 4),
-        ('layer2', 512, 8),
-        ('layer3', 1024, 16),
-        ('layer4', 2048, 32)
+        ('features.3', 64, 1),
+        ('features.8', 128, 2),
+        ('features.17', 256, 4),
+        ('features.26', 512, 8),
+        ('features.35', 512, 16),
     ]
 
     def __init__(self, n_features, res, feat_dim):
@@ -297,17 +296,19 @@ class FeatureNet_(nn.Module):
         self.n_features = n_features
 
         # remove extra modules and hook up full-scale feature conv
-        resnet = models.resnet50(pretrained=True)
-        resnet.avgpool = resnet.fc = nn.Identity()
-        resnet.fullscale = nn.Sequential(*make_layer(3, 32))
-        def _fullscale_fwd(_resnet, inp):
-            _resnet.fullscale(inp[0])
-        resnet.register_forward_pre_hook(_fullscale_fwd)
+        vgg = models.vgg19(pretrained=True)
+        vgg.avgpool = vgg.classifier = nn.Identity()
 
-        self.encoder = FPNEncoder(resnet, self.CKPTS)
+        self.encoder = FPNEncoder(vgg, self.CKPTS)
         self.decoder = FPNDecoder(self.CKPTS, res, 1)
-        self.trans = nn.ModuleList(
-            [nn.Sequential(*make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)), *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch))) for (_, ch, _) in self.CKPTS])
+        self.trans = nn.ModuleList([nn.Sequential(
+            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+        ) for (_, ch, _) in self.CKPTS])
         self.proj = nn.Sequential(
             nn.Linear(sum(ckpt[1] for ckpt in self.CKPTS), 1024), nn.ReLU(),
             nn.Linear(1024, 512), nn.ReLU(),
@@ -320,10 +321,10 @@ class FeatureNet_(nn.Module):
     def forward(self, img):
         b, _, h, w = img.shape
 
-        feature_maps = self.encoder(img)
-        score_map = self.decoder(feature_maps)
+        feature_maps_orig = self.encoder(img)
+        score_map = self.decoder(feature_maps_orig)
 
-        feature_maps = [trans(feature_maps[ckpt[0]]) for ckpt, trans in zip(self.CKPTS, self.trans)]
+        feature_maps = [trans(feature_maps_orig[ckpt[0]]) for ckpt, trans in zip(self.CKPTS, self.trans)]
         score_map = self.softnms(score_map, (5, 5))
 
         scores, points = self.const_boarder(nms.nms2d(score_map, (5, 5))).view(b, -1, 1).topk(self.n_features, dim=1)
@@ -331,7 +332,7 @@ class FeatureNet_(nn.Module):
         points = C.normalize_pixel_coordinates(points, h, w)
 
         raw_features = torch.cat([self.grid_sample((feature, points)) for feature in feature_maps], dim=-1)
-        return points, score_map, scores, self.proj(raw_features), raw_features
+        return points, score_map, scores, self.proj(raw_features), raw_features, feature_maps_orig
 
     def softnms(self, x, ks=(3, 3)):
         b, c, h, w = x.shape
@@ -400,14 +401,15 @@ class FeatureNet(models.VGG):
 
         B, _, H, W = inputs.shape
 
-        points, pointness, scores, descriptors, raw_features = self.features(inputs)
+        points, pointness, scores, descriptors, raw_features, feature_maps = self.features(inputs)
 
         # fea = features.permute(0, 2, 3, 1).reshape(B, -1, self.feat_dim)
 
         # descriptors = descriptors + self.pos_enc(points)
         # descriptors = self.graph(descriptors)
 
-        gd, gd_locs = self.global_desc(raw_features[:, :, -self.gd_indim:] + self.pos_enc_gd(points))
+        fea = feature_maps[self.features.CKPTS[-1][0]]
+        gd, gd_locs = self.global_desc(fea.reshape(B, self.gd_indim, fea.shape[-1] * fea.shape[-2]).transpose(-1, -2))
         # fea = fea[:, ::4]
 
         N = self.feat_num
