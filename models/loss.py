@@ -30,7 +30,7 @@ class MemReplayLoss():
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
         self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.n_triplet, self.n_recent, self.n_pair = 8, 2, 1
+        self.n_triplet, self.n_recent, self.n_pair = 4, 2, 1
         self.min_sample_size = 32
         self.gd_match = GlobalDescMatchLoss(n_triplet=self.n_triplet, n_pair=self.n_pair, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
@@ -132,7 +132,7 @@ class MemReplayLoss():
 
 def recombine(key, *batches):
     tensors = [batch[key] for batch in batches]
-    reversed_shapes = [list(reversed(tensor.shape)) for tensor in tensors]
+    reversed_shapes = [list(reversed(tensor.shape[1:])) for tensor in tensors]
     common_shapes = []
     for shape in zip(*reversed_shapes):
         if all(s == shape[0] for s in shape):
@@ -272,7 +272,7 @@ class DiscriptorMatchLoss(nn.Module):
 
         # !hardcode
         pair = torch.tensor([[0, 8], [1, 9], [2, 10], [3, 11], [4, 12], [5, 13], [6, 14], [7, 15]])
-        b_src, b_dst = pair[:, 0], pair[:, 1]
+        b_src, b_dst = torch.tensor([0, 1, 2, 3]), torch.tensor([4, 5, 6, 7])
         # *non-cartesian
         # dist = dist[b_src, b_dst]
 
@@ -284,7 +284,8 @@ class DiscriptorMatchLoss(nn.Module):
         score_ave = (scores[:, None, :, None] + scores[None, :, None, :]).clamp(min=self.eps) / 2
         pcos = metric(descriptors, descriptors)
         # *non-cartesian
-        # pcos = metric(descriptors[:8], descriptors[8:])
+        # score_ave = (scores[b_src, :, None] + scores[b_dst, None, :]).clamp(min=self.eps) / 2
+        # pcos = metric(descriptors[b_src], descriptors[b_dst])
 
         sig_match = -torch.log(score_ave[match])
         sig_miss  = -torch.log(score_ave[miss])
