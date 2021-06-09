@@ -368,6 +368,7 @@ class MASLoss():
         self.old_params = None
         self.memory = memory
         self.cosine = PairwiseCosine()
+        self.n_triplet = 4
 
     def __call__(self, model, cur_env):
         if self.old_params is None:
@@ -375,14 +376,17 @@ class MASLoss():
 
         old_env = np.random.choice([env for env in self.memory.envs() if env != cur_env[0]])
         self.memory.swap(old_env)
-        _, (ank_batch, pos_batch, neg_batch), _ = self.memory.sample_frames(4)
+        _, (ank_batch, pos_batch, neg_batch), _ = self.memory.sample_frames(self.n_triplet)
         # !hardcode
         img = recombine('img', ank_batch, pos_batch, neg_batch).to('cuda')
 
-        descriptors, _, _, _, gd, _ = model(img=img)
-        gd = F.normalize(gd[0], dim=-1)
+        ld, _, _, _, (gd, _), _ = model(img=img)
+        ld = F.normalize(ld, dim=-1)
+        gd = F.normalize(gd, dim=-1)
 
-        gs = ag.grad(gd, model.parameters(), gd.sum(dim=0, keepdims=True).detach().expand_as(gd))
+        sum_l = ld.sum(dim=(0, 1), keepdims=True).detach().expand_as(ld) / ld.shape[1]
+        sum_g = gd.sum(dim=0, keepdims=True).detach().expand_as(gd)
+        gs = ag.grad([ld, gd], model.parameters(), [sum_l, sum_g])
         loss = 0
         for g, param, old_param in zip(gs, model.parameters(), self.old_params):
             loss += ((g * (param - old_param)) ** 2).sum()
