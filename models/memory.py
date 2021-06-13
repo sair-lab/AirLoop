@@ -18,7 +18,7 @@ class Memory(nn.Module):
         self.swap_dir = swap_dir
         self.out_device = out_device
         self.capacity = capacity
-        self.n_frame = 0
+        self.n_frame, self.n_frame_hist = None, None
         self.property_spec = {
             'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': 'cuda'},
             'img': {'shape': (3,) + img_size, 'default': np.nan},
@@ -98,18 +98,20 @@ class Memory(nn.Module):
             ################################################################
 
     def store_fifo(self, pos, proj_fn, **properties):
-        frame_addr = (torch.arange(len(pos)) + self.n_frame) % self.capacity
+        frame_addr = (torch.arange(len(pos)) + self.n_frame_hist) % self.capacity
+        self.n_frame_hist += len(frame_addr)
         self._store.store(frame_addr, pos=pos, **properties)
         self.n_frame = len(self._store)
         self.update_rel(frame_addr, proj_fn)
 
     def swap(self, name):
         if name in self._states:
-            self._store, self._rel = self._states[name]
+            self._store, self._rel, self.n_frame_hist = self._states[name]
         else:
+            self.n_frame_hist = np.array(0)
             self._store = SparseStore(name=name, out_device=self.out_device, max_cap=self.capacity, **self.property_spec)
             self._rel = torch.zeros(self.capacity, self.capacity, device=self.out_device).fill_(np.nan)
-            self._states[name] = self._store, self._rel
+            self._states[name] = self._store, self._rel, self.n_frame_hist
         self.n_frame = len(self._store)
         #     else:
         #         torch.save(self._store, os.path.join(self.swap_dir, '%s.pth' % self._store.name))
