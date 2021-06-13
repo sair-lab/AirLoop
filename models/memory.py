@@ -18,7 +18,7 @@ class Memory(nn.Module):
         self.swap_dir = swap_dir
         self.out_device = out_device
         self.capacity = capacity
-        self.n_frame = 0
+        self.n_frame, self.n_frame_hist = 0, 0
         self.property_spec = {
             'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': 'cuda'},
             'img': {'shape': (3,) + img_size, 'default': np.nan},
@@ -98,7 +98,8 @@ class Memory(nn.Module):
             ################################################################
 
     def store_fifo(self, pos, proj_fn, **properties):
-        frame_addr = (torch.arange(len(pos)) + self.n_frame) % self.capacity
+        frame_addr = (torch.arange(len(pos)) + self.n_frame_hist) % self.capacity
+        self.n_frame_hist += len(frame_addr)
         self._store.store(frame_addr, pos=pos, **properties)
         self.n_frame = len(self._store)
         self.update_rel(frame_addr, proj_fn)
