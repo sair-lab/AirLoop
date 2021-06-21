@@ -16,8 +16,8 @@ from copy import copy
 from torch.utils.data import Sampler
 from torch.utils.data import Dataset
 from torchvision import transforms as T
-from scipy.spatial.transform import Rotation as R
 from torchvision.transforms import functional as F
+from utils.geometry import pose2mat
 
 from .augment import AirAugment
 
@@ -32,10 +32,10 @@ class TartanAir(Dataset):
         else:
             self.sequences = glob.glob(os.path.join(root,'*','[EH]a[sr][yd]','*'))
             self.image, self.depth, self.poses, self.sizes = {}, {}, {}, []
-            ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+            ned2edn = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
             for seq in self.sequences:
                 quaternion = np.loadtxt(path.join(seq, 'pose_left.txt'), dtype=np.float32)
-                self.poses[seq] = ned2den @ pose2mat(quaternion)
+                self.poses[seq] = ned2edn @ pose2mat(quaternion)
                 self.image[seq] = sorted(glob.glob(path.join(seq,'image_left','*.png')))
                 self.depth[seq] = sorted(glob.glob(path.join(seq,'depth_left','*.npy')))
                 assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
@@ -161,19 +161,6 @@ class AirSampler(Sampler):
 
     def __len__(self):
         return len(self.batches)
-
-
-def pose2mat(pose):
-    """Converts pose vectors to matrices.
-    Args:
-      pose: [tx, ty, tz, qx, qy, qz, qw] (N, 7).
-    Returns:
-      [R t] (N, 3, 4).
-    """
-    t = pose[:, 0:3, None]
-    rot = R.from_quat(pose[:, 3:7]).as_matrix().astype(np.float32).transpose(0, 2, 1)
-    t = -rot @ t
-    return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)
 
 
 if __name__ == "__main__":

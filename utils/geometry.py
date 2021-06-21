@@ -5,6 +5,7 @@ import numpy as np
 import kornia as kn
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.spatial.transform import Rotation as R
 
 
 class Projector(nn.Module):
@@ -226,3 +227,16 @@ def gen_probe(depth_map, scale=8):
     points = torch.stack(torch.meshgrid(torch.arange(h), torch.arange(w)), dim=2) + 0.5
     points = kn.normalize_pixel_coordinates(points, w + 1, h + 1).unsqueeze(0).expand(B, -1, -1, -1)
     return points.reshape(B, -1, 2).to(depth_map)
+
+
+def pose2mat(pose):
+    """Converts pose vectors to matrices.
+    Args:
+      pose: [tx, ty, tz, qx, qy, qz, qw] (N, 7).
+    Returns:
+      [R t] (N, 3, 4).
+    """
+    t = pose[:, 0:3, None]
+    rot = R.from_quat(pose[:, 3:7]).as_matrix().astype(np.float32).transpose(0, 2, 1)
+    t = -rot @ t
+    return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)

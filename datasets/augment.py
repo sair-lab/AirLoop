@@ -33,7 +33,7 @@ class AirAugment(nn.Module):
 
         return scaled_rotation.to(K) @ K
 
-    def forward(self, image, K, depth=None):
+    def forward(self, image, K=None, depth=None):
         if isinstance(image, Image.Image):
             in_size = np.array(image.size[::-1])
             image = self.resize_totensor(image)
@@ -57,10 +57,11 @@ class AirAugment(nn.Module):
         elif transform == 2:
             trans = self.rand_rotate
             angle = T.RandomRotation.get_params(trans.degrees)
+            cur_size = np.array(image.shape[1:])
             # fill oob pix with reflection so that model can't detect rotation with boundary
-            image = F.pad(image, padding=tuple(in_size // 2), padding_mode='reflect')
+            image = F.pad(image, padding=tuple(cur_size // 2), padding_mode='reflect')
             image = F.rotate(image, angle, trans.resample, trans.expand, trans.center, trans.fill)
-            image = F.center_crop(image, tuple(in_size))
+            image = F.center_crop(image, tuple(cur_size))
             # fill oob depth with inf so that projector can mask them out
             if depth is not None and isinstance(depth, torch.Tensor):
                 # torch 1.7.1: F.rotate doesn't support fill for Tensor
@@ -72,7 +73,13 @@ class AirAugment(nn.Module):
         elif transform == 3:
             image = self.rand_color(image)
 
-        translation = self.img_size / 2 - center
-        K = self.apply_affine(K, translation, center, scale, angle)
+        ret = (image,)
 
-        return (image, K) if depth is None else (image, K, depth)
+        if K is not None:
+            translation = self.img_size / 2 - center
+            K = self.apply_affine(K, translation, center, scale, angle)
+            ret = ret + (K,)
+        if depth is not None:
+            ret = ret + (depth,)
+
+        return ret
