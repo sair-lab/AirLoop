@@ -5,27 +5,22 @@ import torch
 import numpy as np
 import torch.nn as nn
 from utils.misc import rectify_savepath
+from utils import Projector, GridSample, feature_pt_ncovis
 
 
 class Memory(nn.Module):
     MAX_CAP = 2000
-    STATE_DICT = ['n_probe', 'swap_dir', 'out_device', 'capacity',
-                  'n_frame', 'property_spec', '_states', '_store', '_rel']
+    STATE_DICT = ['swap_dir', 'out_device', 'capacity', 'n_frame',
+                  'n_frame_hist', 'property_spec', '_states', '_store', '_rel']
 
-    def __init__(self, capacity=MAX_CAP, n_probe=1200, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
+    def __init__(self, property_spec, capacity=MAX_CAP, swap_dir='./memory', out_device='cuda'):
         super().__init__()
-        self.n_probe = n_probe
         self.swap_dir = swap_dir
         self.out_device = out_device
         self.capacity = capacity
-        self.n_frame, self.n_frame_hist = None, None
-        self.property_spec = {
-            'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': 'cuda'},
-            'img': {'shape': (3,) + img_size, 'default': np.nan},
-            'pose': {'shape': (3, 4), 'default': np.nan},
-            'K': {'shape': (3, 3), 'default': np.nan},
-            'depth_map': {'shape': (1,) + img_size, 'default': np.nan},
-        }
+        self.n_frame = None
+        self.n_frame_hist = None
+        self.property_spec = property_spec
         self._states = {}
         self._store = None
         self._rel = None
@@ -97,12 +92,13 @@ class Memory(nn.Module):
             (relevance.gather(1, pos_idx), relevance.gather(1, neg_idx))
             ################################################################
 
-    def store_fifo(self, pos, proj_fn, **properties):
-        frame_addr = (torch.arange(len(pos)) + self.n_frame_hist) % self.capacity
+    def store_fifo(self, **properties):
+        frame_addr = torch.arange(len(list(properties.values())[0]))
+        frame_addr = (frame_addr + self.n_frame_hist) % self.capacity
         self.n_frame_hist += len(frame_addr)
-        self._store.store(frame_addr, pos=pos, **properties)
+        self._store.store(frame_addr, **properties)
         self.n_frame = len(self._store)
-        self.update_rel(frame_addr, proj_fn)
+        self.update_rel(frame_addr)
 
     def swap(self, name):
         if name in self._states:
@@ -119,21 +115,21 @@ class Memory(nn.Module):
         # self._store = torch.load(load_path) if os.path.isfile(load_path) else \
         #     KeyFrameStore(self.D_point, self.D_frame, self.n_fea, name).to(device)
     
-    def update_rel(self, frame_idx, proj_fn):
-        old_pos = self._store[torch.arange(self.n_frame), ['pos']]['pos'].to(self.out_device)
-        relevance = proj_fn(old_pos) # (n_frame, B)
-        self._rel[:self.n_frame, frame_idx.to(self._rel.device)] = relevance
-        self._rel[frame_idx.to(self._rel.device), :self.n_frame] = relevance.T
+    def update_rel(self, frame_idx):
+        frame_idx = frame_idx.to(self._rel.device)
+        # (n_frame, B)
+        relevance = self.get_rel(torch.arange(self.n_frame), frame_idx).to(self._rel)
+        self._rel[:self.n_frame, frame_idx] = relevance
+        self._rel[frame_idx, :self.n_frame] = relevance.T
 
-    # def get_rel(self, idx):
-    #     # i0, i1, ..., i(i-1), ii, (i+1)i ..., ni
-    #     return torch.stack([torch.cat([self._rel[i, :i + 1], self._rel[i + 1:self.n_frame, i].T]) for i in idx])
+    def get_rel(self, src_idx, dst_idx):
+        raise NotImplementedError()
+
     def save(self, path, overwrite=True):
         save_path = rectify_savepath(path, overwrite=overwrite)
         torch.save(self, save_path)
         print('Saved memory: %s' % save_path)
 
-    
     def load(self, path):
         loaded_mem = torch.load(path)
         for attr in self.STATE_DICT:
@@ -145,6 +141,30 @@ class Memory(nn.Module):
 
     def envs(self):
         return self._states.keys()
+
+
+class SIoUMemory(Memory):
+    def __init__(self, capacity=Memory.MAX_CAP, n_probe=1200, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
+        SIoUM_SPEC = {
+            'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': 'cuda'},
+            'img': {'shape': (3,) + img_size, 'default': np.nan},
+            'pose': {'shape': (3, 4), 'default': np.nan},
+            'K': {'shape': (3, 3), 'default': np.nan},
+            'depth_map': {'shape': (1,) + img_size, 'default': np.nan},
+        }
+        super().__init__(SIoUM_SPEC, capacity, swap_dir, out_device)
+        self.STATE_DICT.append('n_probe')
+
+        self.n_probe = n_probe
+        self.projector = Projector()
+        self.grid_sample = GridSample()
+
+    def get_rel(self, src_idx, dst_idx):
+        src_pos = self._store[src_idx, ['pos']]['pos']
+        dst_info = self._store[dst_idx, ['pos', 'pose', 'depth_map', 'K']]
+        dst_pos, dst_depth_map, dst_pose, dst_K = dst_info['pos'], dst_info['depth_map'], dst_info['pose'], dst_info['K']
+
+        return feature_pt_ncovis(src_pos, dst_pos, dst_depth_map, dst_pose, dst_K, self.projector, self.grid_sample)
 
 
 class SparseStore():
@@ -174,15 +194,20 @@ class SparseStore():
             prop_shape = self.buf[name]['shape']
             assert prop_shape == val.shape[-len(prop_shape):]
             batch.append(val.shape[:-len(prop_shape)])
-        assert all(b == batch[0] for b in batch)
+        # coherent and linear indexing
+        assert all(b == batch[0] for b in batch) and len(batch[0]) <= 1
 
-        # single or batch mode
-        if len(batch[0]) == 0:
-            _idx = torch.tensor(_idx if _idx is not None else self.size, dtype=torch.long)
+        if isinstance(_idx, torch.Tensor):
+            # avoids copy construct warning
+            _idx = _idx.to(torch.long)
+        elif _idx is not None:
+            # any scalar or iterable
+            _idx = torch.tensor(_idx, dtype=torch.long)
         else:
-            batch_size = int(batch[0][0])
-            _idx = torch.tensor(_idx, dtype=torch.long) if _idx is not None else torch.arange(batch_size) + self.size
-            assert batch_size == len(_idx)
+            # default indices
+            _idx = torch.tensor(self.size, dtype=torch.long) if len(batch[0]) == 0 else \
+                torch.arange(int(batch[0][0])) + self.size
+        assert (len(_idx.shape) == len(batch[0]) == 0) or (len(_idx.shape) == 1 and len(_idx) == int(batch[0][0]))
 
         for name, val in values.items():
             self._store(self.buf[name], _idx, val)
@@ -206,7 +231,8 @@ class SparseStore():
     @torch.no_grad()
     def __getitem__(self, idx):
         idx, include = idx if isinstance(idx, tuple) else (idx, self.buf.keys())
-        idx, ret = torch.tensor(idx), {name: [] for name in self.buf if name in include}
+        idx = idx.to(torch.long) if isinstance(idx, torch.Tensor) else torch.tensor(idx, dtype=torch.long)
+        ret = {name: [] for name in self.buf if name in include}
         if len(idx.shape) == 0:
             for name, buf in self.buf.items():
                 ret[name].append(self._get(buf, idx))

@@ -26,7 +26,7 @@ class MemReplayLoss():
         self.projector = Projector()
         self.grid_sample = GridSample()
         self.augment = AirAugment(scale=args.scale)
-        self.memory = Memory(capacity=1000, n_probe=1200, swap_dir='workspace/air-slam/.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
+        self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='workspace/air-slam/.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
         self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
@@ -98,19 +98,22 @@ class MemReplayLoss():
             if self.viz is not None and n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
                 self.viz.show(img, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='Out/Points', step=n_iter)
 
-                N, (H, W) = ank_batch['pos'].shape[1], img.shape[2:]
+                if isinstance(self.memory, SIoUMemory):
+                    N, (H, W) = ank_batch['pos'].shape[1], img.shape[2:]
 
-                # project points from pos to ank
-                mem_pts_scr = self.projector.world2pix(pos_batch['pos'].reshape(-1, N, 3), (H, W), ank_batch['pose'], ank_batch['K'], ank_batch['depth_map'])[0]
-                B_total = self.n_triplet * (self.n_pair * 2 + 1)
-                mem_pts_scr_ = mem_pts_scr.reshape(self.n_triplet, self.n_pair * N, 2)
-                proj_pts_ = torch.cat([
-                    torch.zeros_like(mem_pts_scr_).fill_(np.nan),
-                    mem_pts_scr_,
-                    torch.zeros_like(mem_pts_scr_).fill_(np.nan)], 1).reshape(B_total, self.n_pair * N, 2)
+                    # project points from pos to ank
+                    mem_pts_scr = self.projector.world2pix(pos_batch['pos'].reshape(-1, N, 3), (H, W), ank_batch['pose'], ank_batch['K'], ank_batch['depth_map'])[0]
+                    B_total = self.n_triplet * (self.n_pair * 2 + 1)
+                    mem_pts_scr_ = mem_pts_scr.reshape(self.n_triplet, self.n_pair * N, 2)
+                    proj_pts_ = torch.cat([
+                        torch.zeros_like(mem_pts_scr_).fill_(np.nan),
+                        mem_pts_scr_,
+                        torch.zeros_like(mem_pts_scr_).fill_(np.nan)], 1).reshape(B_total, self.n_pair * N, 2)
 
-                proj_pts_color = torch.arange(self.n_pair)[None, :, None].expand(B_total, self.n_pair, N) + 1
-                proj_pts_color = proj_pts_color.reshape(B_total, self.n_pair * N).detach().cpu().numpy()
+                    proj_pts_color = torch.arange(self.n_pair)[None, :, None].expand(B_total, self.n_pair, N) + 1
+                    proj_pts_color = proj_pts_color.reshape(B_total, self.n_pair * N).detach().cpu().numpy()
+                else:
+                    proj_pts_ = proj_pts_color = None
 
                 ank_img, pos_img, neg_img = img.split([self.n_triplet, self.n_triplet * self.n_pair, self.n_triplet * self.n_pair])
                 self.viz.show(
@@ -122,12 +125,8 @@ class MemReplayLoss():
 
     def store_memory(self, imgs, depth_map, pose, K, env):
         self.memory.swap(env[0])
-        points = gen_probe(depth_map)
-        points_w = self.projector.pix2world(points, depth_map, pose, K)
-
-        def project(mem_pos):
-            return feature_pt_ncovis(mem_pos.to(depth_map), points, depth_map, pose, K, self.projector, self.grid_sample).to(mem_pos)
-        self.memory.store_fifo(pos=points_w, proj_fn=project, img=imgs, depth_map=depth_map, pose=pose, K=K)
+        points_w = self.projector.pix2world(gen_probe(depth_map), depth_map, pose, K)
+        self.memory.store_fifo(pos=points_w, img=imgs, depth_map=depth_map, pose=pose, K=K)
 
 
 def recombine(key, *batches):
