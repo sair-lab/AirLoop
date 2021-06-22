@@ -27,7 +27,8 @@ class MatchEvaluator():
         self.args = args
 
     @torch.no_grad()
-    def observe(self, descriptors, points, scores, gd, score_map, depth_map, poses, Ks, imgs, env_seq):
+    def observe(self, descriptors, points, scores, gd, score_map, aux, imgs, env_seq):
+        depth_map, poses, Ks = aux
         B, N, _ = points.shape
         _, _, H, W = imgs.shape
         top = N if self.top is None else self.top
@@ -181,7 +182,8 @@ class RecognitionEvaluator():
         self.args = args
 
     @torch.no_grad()
-    def observe(self, descriptors, points, scores, gd, score_map, depth_map, poses, Ks, imgs, env_seq):
+    def observe(self, descriptors, points, scores, gd, score_map, aux, imgs, env_seq):
+        depth_map, poses, Ks = aux
         env = env_seq[0][0]
         if self.cur_env != env:
             last_env, self.cur_env = self.cur_env, env

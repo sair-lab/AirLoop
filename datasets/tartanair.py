@@ -1,96 +1,65 @@
 #!/usr/bin/env python3
 
 import os
-import re
 import bz2
 import glob
 import torch
 import pickle
-import itertools
 import numpy as np
-import kornia as kn
 from os import path
 import pandas as pd
 from PIL import Image
-from copy import copy
-from torch.utils.data import Sampler
 from torch.utils.data import Dataset
-from torchvision import transforms as T
 from torchvision.transforms import functional as F
 from utils.geometry import pose2mat
 
 from .augment import AirAugment
 
+from .base import DatasetBase
 
-class TartanAir(Dataset):
-    def __init__(self, root, scale=1, augment=True, catalog_path=None, exclude=None, include=None):
-        super().__init__()
-        self.augment = AirAugment(scale, size=[480, 640], resize_only=not augment)
-        if catalog_path is not None and os.path.exists(catalog_path):
-            with bz2.BZ2File(catalog_path, 'rb') as f:
-                self.sequences, self.image, self.depth, self.poses, self.sizes = pickle.load(f)
-        else:
-            self.sequences = glob.glob(os.path.join(root,'*','[EH]a[sr][yd]','*'))
-            self.image, self.depth, self.poses, self.sizes = {}, {}, {}, []
-            ned2edn = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
-            for seq in self.sequences:
-                quaternion = np.loadtxt(path.join(seq, 'pose_left.txt'), dtype=np.float32)
-                self.poses[seq] = ned2edn @ pose2mat(quaternion)
-                self.image[seq] = sorted(glob.glob(path.join(seq,'image_left','*.png')))
-                self.depth[seq] = sorted(glob.glob(path.join(seq,'depth_left','*.npy')))
-                assert(len(self.image[seq])==len(self.depth[seq])==self.poses[seq].shape[0])
-                self.sizes.append(len(self.image[seq]))
-            os.makedirs(os.path.dirname(catalog_path), exist_ok=True)
-            with bz2.BZ2File(catalog_path, 'wb') as f:
-                pickle.dump((self.sequences, self.image, self.depth, self.poses, self.sizes), f)
+
+class TartanAir(DatasetBase):
+    NED2EDN = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+
+    def __init__(self, root, scale=1, augment=True, catalog_dir=None):
+        super().__init__(root, 'tartanair', catalog_dir)
         # Camera Intrinsics of TartanAir Dataset
         fx, fy, cx, cy = 320, 320, 320, 240
         self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
 
-        # include/exclude seq with regex
-        self.include_exclude(include, exclude)
-        
+        self.augment = AirAugment(scale, size=[480, 640], resize_only=not augment)
 
-    def __len__(self):
-        return sum(self.sizes)
+    def _populate(self):
+        for env_path in sorted(self.path_prefix.glob('*')):
+            env = env_path.stem
+            self.seqs[env] = [tuple(p.parts[-2:]) for p in sorted(env_path.glob('[EH]a[sr][yd]/*'))]
 
-    def __getitem__(self, ret):
-        i, frame = ret
-        seq, K = self.sequences[i], self.K
-        image = Image.open(self.image[seq][frame])
-        depth = F.to_pil_image(np.load(self.depth[seq][frame]), mode='F')
-        pose = self.poses[seq][frame]
+        self.poses, self.size = {}, {}
+        for env, seq in self.get_env_seqs():
+            seq_path = self.path_prefix / env / seq[0] / seq[1]
+
+            pose_q = np.loadtxt(seq_path / 'pose_left.txt', dtype=np.float32)
+            self.poses[env, seq] = self.NED2EDN @ pose2mat(pose_q)
+
+            self.size[env, seq] = len([p for p in os.listdir(seq_path / 'image_left/') if p.endswith('.png')])
+
+        return ['poses', 'size']
+
+    def get_size(self, env, seq):
+        return self.size[env, seq]
+
+    def getitem_impl(self, env, seq, idx):
+        seq_path = self.path_prefix / env / seq[0] / seq[1]
+        image = Image.open(seq_path / 'image_left' / ('%0.6d_left.png' % idx))
+        depth = F.to_pil_image(np.load(seq_path / 'depth_left' / ('%0.6d_left_depth.npy' % idx)), mode='F')
+        pose = self.poses[env, seq][idx]
         image, K, depth = self.augment(image, self.K, depth)
-        return image, depth, pose, K, seq.split(os.path.sep)[-3:]
-
-    def rand_split(self, ratio, seed=42):
-        total, ratio = len(self.sequences), np.array(ratio)
-        split_idx = np.cumsum(np.round(ratio / sum(ratio) * total), dtype=np.int)[:-1]
-        subsets = []
-        for perm in np.split(np.random.default_rng(seed=seed).permutation(total), split_idx):
-            perm = sorted(perm)
-            subset = copy(self)
-            subset.sequences = np.take(self.sequences, perm).tolist()
-            subset.sizes = np.take(self.sizes, perm).tolist()
-            subsets.append(subset)
-        return subsets
+        return image, (depth, pose, K)
 
     def summary(self):
         return pd.DataFrame(data=[
-            seq.split(os.path.sep)[-3:] + [size] for seq, size in zip(self.sequences, self.sizes)], 
+            [env, seq[0], seq[1], self.get_size(env, seq)] for env, seq in self.get_env_seqs()], 
             columns=['env', 'dif', 'id', 'size'])
-
-    def include_exclude(self, include=None, exclude=None):
-        incl_pattern = re.compile(include) if include is not None else None
-        excl_pattern = re.compile(exclude) if exclude is not None else None
-        final_list = []
-        for seq, size in zip(self.sequences, self.sizes):
-            if (incl_pattern and incl_pattern.search(seq) is None) or \
-                    (excl_pattern and excl_pattern.search(seq) is not None):
-                del self.poses[seq], self.image[seq], self.depth[seq]
-            else:
-                final_list.append((seq, size))
-        self.sequences, self.sizes = zip(*final_list) if len(final_list) > 0 else ([], [])
 
 
 class TartanAirTest(Dataset):
@@ -128,39 +97,6 @@ class TartanAirTest(Dataset):
         pose = self.poses[seq][frame]
         image, K = self.augment(image, self.K)
         return image, pose, K
-
-
-class AirSampler(Sampler):
-    def __init__(self, data, batch_size, shuffle='all', consecutive=True, overlap=True):
-        self.seq_sizes = [(seq_id, size) for seq_id, size in enumerate(data.sizes)]
-        if shuffle == 'seq': np.random.shuffle(self.seq_sizes)
-        self.bs = batch_size
-        self.batches = []
-        for seq_id, size in self.seq_sizes:
-            b_start = np.arange(0, size - self.bs, 1 if overlap else self.bs)
-            frame_idx = np.arange(0, size)
-            if not consecutive: np.random.shuffle(frame_idx)
-            batch = [list(zip([seq_id]*self.bs, frame_idx[st:st+self.bs])) for st in b_start]
-            if shuffle == 'batch': np.random.shuffle(batch)
-            self.batches += batch
-
-        if shuffle == 'env' or shuffle == 'all':
-            all_batches = itertools.chain.from_iterable(self.batches)
-            self.batches = []
-            # get samples from the same environment
-            for _, batches in itertools.groupby(all_batches, lambda b: data.sequences[b[0]].split(os.path.sep)[-3]):
-                env_batches = list(batches)
-                np.random.shuffle(env_batches)
-                # slice back into chunks
-                self.batches += [list(batch) for batch in itertools.zip_longest(*([iter(env_batches)] * batch_size))]
-            
-        if shuffle == 'all': np.random.shuffle(self.batches)
-
-    def __iter__(self):
-        return iter(self.batches)
-
-    def __len__(self):
-        return len(self.batches)
 
 
 if __name__ == "__main__":

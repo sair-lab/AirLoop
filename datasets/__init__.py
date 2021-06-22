@@ -2,14 +2,14 @@
 
 from torch.utils.data import DataLoader
 
+from .base import DefaultSampler
 from .tartanair import TartanAir
-from .tartanair import AirSampler
 from .tartanair import AirAugment
 
 
 def get_datasets(args):
     if args.dataset == 'tartanair':
-        tartanair = TartanAir(args.train_root, args.scale, augment=False, catalog_path=args.train_catalog)
+        tartanair = TartanAir(args.train_root, args.scale, augment=False, catalog_dir=args.catalog_dir)
         res = tartanair.augment.img_size
         pretrain_data, train_data, eval_data = tartanair.rand_split(
             [args.pretrain_percentage,
@@ -34,7 +34,7 @@ def get_datasets(args):
             shuffle = 'none'
 
         data.include_exclude(args.include, args.exclude)
-        sampler = AirSampler(data, args.batch_size, shuffle=shuffle, overlap=False)
+        sampler = DefaultSampler(data, args.batch_size, shuffle=shuffle, overlap=False)
 
         return make_loader(data, sampler, args), res
 

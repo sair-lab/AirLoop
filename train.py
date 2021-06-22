@@ -33,14 +33,14 @@ def evaluate(net, loader, counter, args, writer=None):
     if 'recog' in args.task:
         evaluators.append(RecognitionEvaluator(loader=loader, n_feature=args.feat_dim, D_frame=args.gd_dim, args=args))
 
-    for images, depths, poses, K, env_seq in tqdm.tqdm(loader):
+    for images, aux, env_seq in tqdm.tqdm(loader):
         images = images.to(args.device)
         depths = depths.to(args.device)
         poses = poses.to(args.device)
         K = K.to(args.device)
         descriptors, points, pointness, scores, gd, _ = net(images)
         for evaluator in evaluators:
-            evaluator.observe(descriptors, points, scores, gd, pointness, depths, poses, K, images, env_seq)
+            evaluator.observe(descriptors, points, scores, gd, pointness, aux, images, env_seq)
 
     for evaluator in evaluators:
         evaluator.report()
@@ -57,13 +57,10 @@ def train(model, loader, optimizer, counter, args, writer=None):
     for epoch in range(args.epoch):
         enumerator = tqdm.tqdm(loader)
         pbd = ProgressBarDescription(enumerator)
-        for images, depths, poses, K, env_seq in enumerator:
+        for images, aux, env_seq in enumerator:
             images = images.to(args.device)
-            depths = depths.to(args.device)
-            poses = poses.to(args.device)
-            K = K.to(args.device)
 
-            loss = criterion(model, images, depths, poses, K, env_seq[0])
+            loss = criterion(model, images, aux, env_seq[0])
 
             # in case loss is manually set to 0 to skip batches
             if loss.requires_grad and not loss.isnan():
@@ -131,6 +128,7 @@ if __name__ == "__main__":
     # Arguements
     parser = argparse.ArgumentParser(description='Feature Graph Networks')
     parser.add_argument("--task", type=str, choices=['pretrain', 'train-envseq', 'train-envshuffle', 'train-seqshuffle', 'train-allshuffle', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
+    parser.add_argument("--catalog-dir", type=str, default='./.cache/catalog', help='processed dataset')
     parser.add_argument("--no-parallel", action='store_true', help="DataParallel")
     parser.add_argument("--devices", type=str, nargs='+', default=None, help="Available devices")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
@@ -138,8 +136,6 @@ if __name__ == "__main__":
     parser.add_argument("--exclude", type=str, default=None, help="sequences to exclude")
     parser.add_argument("--train-root", type=str, default='/data/datasets/tartanair', help="data location")
     parser.add_argument("--test-root", type=str, default='/data/datasets/tartanair_test')
-    parser.add_argument("--train-catalog", type=str, default='./.cache/tartanair-sequences.pbz2', help='processed training set')
-    parser.add_argument("--test-catalog", type=str, default='./.cache/tartanair-test-sequences.pbz2', help='processed test set')
     parser.add_argument("--log-dir", type=str, default=None, help="log dir")
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--mem-load", type=str, default=None, help="load saved memory")
@@ -148,6 +144,7 @@ if __name__ == "__main__":
     parser.add_argument("--mem-save", type=str, default=None, help="memory save path")
     parser.add_argument("--mas", action='store_true', help="enable MAS")
     parser.add_argument("--gd-dim", type=int, default=1024, help="global descriptor dimension")
+    parser.add_argument('--scale', type=float, default=0.5, help='image resize')
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
     parser.add_argument("--feat-num", type=int, default=500, help="feature number")
     parser.add_argument('--scale', type=float, default=1, help='image resize')

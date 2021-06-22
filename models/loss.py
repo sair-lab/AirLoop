@@ -13,7 +13,7 @@ import kornia.geometry.conversions as C
 
 from datasets import AirAugment
 from utils import Visualizer
-from models.memory import Memory
+from models.memory import SIoUMemory
 from utils import GridSample, Projector, PairwiseCosine, ConsecutiveMatch, gen_probe, feature_pt_ncovis
 
 
@@ -26,7 +26,7 @@ class MemReplayLoss():
         self.projector = Projector()
         self.grid_sample = GridSample()
         self.augment = AirAugment(scale=args.scale)
-        self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='workspace/air-slam/.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
+        self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/air-slam/.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
         self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
@@ -37,9 +37,9 @@ class MemReplayLoss():
         self.mas = MASLoss(self.memory, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.args = args
 
-    def __call__(self, net, img, depth_map, pose, K, env):
+    def __call__(self, net, img, aux, env):
         device = img.device
-        self.store_memory(img, depth_map, pose, K, env)
+        self.store_memory(img, aux, env)
 
         if len(self.memory) < self.min_sample_size:
             return torch.zeros(1).to(device)
@@ -123,8 +123,10 @@ class MemReplayLoss():
 
         return loss
 
-    def store_memory(self, imgs, depth_map, pose, K, env):
+    def store_memory(self, imgs, aux, env):
         self.memory.swap(env[0])
+        if isinstance(self.memory, SIoUMemory):
+            depth_map, pose, K = aux
         points_w = self.projector.pix2world(gen_probe(depth_map), depth_map, pose, K)
         self.memory.store_fifo(pos=points_w, img=imgs, depth_map=depth_map, pose=pose, K=K)
 
