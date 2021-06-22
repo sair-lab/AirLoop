@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 
 import os
-import sys
 import tqdm
-import copy
 import torch
 import random
-import warnings
-import argparse
 import numpy as np
 import torch.nn as nn
+import configargparse
 import torch.optim as optim
 from tensorboard import program
-from torchvision import transforms as T
 from torch.utils.tensorboard import SummaryWriter
 
 from models import FeatureNet
@@ -49,7 +45,7 @@ def evaluate(net, loader, counter, args, writer=None):
         evaluator.report()
 
 
-def train(model, loader, optimizer, counter, args, writer=None):
+def train(model, loader, optimizer, counter, args, writer=None, scheduler=None):
     model.train()
 
     if 'train' in args.task:
@@ -70,6 +66,8 @@ def train(model, loader, optimizer, counter, args, writer=None):
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
+                if scheduler is not None:
+                    scheduler.step()
 
             # save model on env change for env-incremental tasks
             if 'env' in args.task and last_env != env_seq[0][0]:
@@ -111,25 +109,30 @@ def main(args):
 
     writer = None
     if args.log_dir is not None:
+        log_dir = args.log_dir
+        # timestamp runs into the same logdir
+        if os.path.exists(log_dir) and os.path.isdir(log_dir):
         from datetime import datetime
-        current_time = datetime.now().strftime('%b%d_%H-%M-%S')
-        writer = SummaryWriter(os.path.join(args.log_dir, current_time))
+            log_dir = os.path.join(log_dir, datetime.now().strftime('%b%d_%H-%M-%S'))
+        writer = SummaryWriter(log_dir)
         tb = program.TensorBoard()
-        tb.configure(argv=[None, '--logdir', args.log_dir, '--bind_all', '--samples_per_plugin=images=50'])
+        tb.configure(argv=[None, '--logdir', log_dir, '--bind_all', '--samples_per_plugin=images=50'])
         print(('TensorBoard at %s \n' % tb.launch()))
 
     step_counter = GlobalStepCounter(initial_step=1)
 
     if 'train' in args.task:
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.w_decay)
-        train(model, loader, optimizer, step_counter, args, writer)
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.w_decay)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, 1000, 0.75)
+        # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.w_decay)
+        train(model, loader, optimizer, step_counter, args, writer, scheduler)
     if 'eval' in args.task:
         evaluate(model, loader, step_counter, args, writer)
 
 
 if __name__ == "__main__":
     # Arguements
-    parser = argparse.ArgumentParser(description='Feature Graph Networks')
+    parser = configargparse.ArgumentParser(description='Feature Graph Networks', default_config_files=['./.cache/config.yaml'])
     parser.add_argument("--task", type=str, choices=['pretrain', 'train-envseq', 'train-envshuffle', 'train-seqshuffle', 'train-allshuffle', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
     parser.add_argument("--catalog-dir", type=str, default='./.cache/catalog', help='processed dataset')
     parser.add_argument("--no-parallel", action='store_true', help="DataParallel")
@@ -151,8 +154,7 @@ if __name__ == "__main__":
     parser.add_argument('--scale', type=float, default=0.5, help='image resize')
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
     parser.add_argument("--feat-num", type=int, default=500, help="feature number")
-    parser.add_argument('--scale', type=float, default=1, help='image resize')
-    parser.add_argument("--lr", type=float, default=1e-5, help="learning rate")
+    parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="learning rate")
     parser.add_argument("--factor", type=float, default=0.1, help="factor of lr")
     parser.add_argument("--momentum", type=float, default=0.9, help="momentum of optim")
@@ -167,9 +169,6 @@ if __name__ == "__main__":
     parser.add_argument("--eval-split-seed", type=int, default=42, help='Seed for splitting the dataset')
     parser.add_argument("--pretrain-percentage", type=float, default=0.0, help='Percentage of sequences for eval')
     parser.add_argument("--eval-percentage", type=float, default=0.2, help='Percentage of sequences for eval')
-    parser.add_argument("--eval-freq", type=int, default=10000, help='Evaluate every * steps')
-    parser.add_argument("--eval-topk", type=int, default=200, help='Only inspect top * matches')
-    parser.add_argument("--eval-back", type=int, nargs='+', default=[1])
     parser.add_argument("--eval-save", type=str, help='Evaluation save path')
     parserd_args = parser.parse_args(); print(parserd_args)
 

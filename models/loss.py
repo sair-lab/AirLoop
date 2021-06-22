@@ -29,7 +29,8 @@ class MemReplayLoss():
         self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
-        self.n_triplet, self.n_recent, self.n_pair = 4, 2, 1
+        self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.n_triplet, self.n_recent, self.n_pair = 4, 0, 1
         self.min_sample_size = 32
         self.gd_match = GlobalDescMatchLoss(n_triplet=self.n_triplet, n_pair=self.n_pair, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         if args.gd_only:
