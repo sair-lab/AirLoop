@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 
-import os
-import copy
-import torch
-import torch.autograd as ag
-import numpy as np
 import kornia as kn
-import torch.nn as nn
 import kornia.feature as kf
-import torch.nn.functional as F
 import kornia.geometry.conversions as C
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from datasets import AirAugment
 from utils import Visualizer
-from models.memory import SIoUMemory
-from utils import GridSample, Projector, PairwiseCosine, ConsecutiveMatch, gen_probe, feature_pt_ncovis
+from models.memory import SIoUMemory, OffsetMemory
+from utils import GridSample, Projector, PairwiseCosine, ConsecutiveMatch, gen_probe
 
 
 class MemReplayLoss():
@@ -26,7 +23,10 @@ class MemReplayLoss():
         self.projector = Projector()
         self.grid_sample = GridSample()
         self.augment = AirAugment(scale=args.scale)
-        self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
+        if args.dataset == 'tartanair':
+            self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
+        elif args.dataset == 'nordland':
+            self.memory = OffsetMemory(capacity=1000, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
         self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
@@ -137,8 +137,11 @@ class MemReplayLoss():
         self.memory.swap(env[0])
         if isinstance(self.memory, SIoUMemory):
             depth_map, pose, K = aux
-        points_w = self.projector.pix2world(gen_probe(depth_map), depth_map, pose, K)
-        self.memory.store_fifo(pos=points_w, img=imgs, depth_map=depth_map, pose=pose, K=K)
+            points_w = self.projector.pix2world(gen_probe(depth_map), depth_map, pose, K)
+            self.memory.store_fifo(pos=points_w, img=imgs, depth_map=depth_map, pose=pose, K=K)
+        elif isinstance(self.memory, OffsetMemory):
+            offset = aux
+            self.memory.store_fifo(img=imgs, offset=offset)
 
 
 def recombine(key, *batches):

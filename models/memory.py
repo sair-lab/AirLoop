@@ -172,6 +172,23 @@ class SIoUMemory(Memory):
         return feature_pt_ncovis(src_pos, dst_pos, dst_depth_map, dst_pose, dst_K, self.projector, self.grid_sample)
 
 
+class OffsetMemory(Memory):
+    def __init__(self, window=5, capacity=Memory.MAX_CAP, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
+        OFFSETM_SPEC = {
+            'img': {'shape': (3,) + img_size, 'default': np.nan},
+            'offset': {'shape': (), 'dtype': torch.int, 'default': -1},
+        }
+        super().__init__(OFFSETM_SPEC, capacity, swap_dir, out_device)
+        self.STATE_DICT.append('cutoff')
+        self.cutoff = [1 / (window / 2 + 1), 1 / (window / 2 + 1)]
+
+    def get_rel(self, src_idx, dst_idx):
+        src_off = self._store[src_idx, ['offset']]['offset']
+        dst_off = self._store[dst_idx, ['offset']]['offset']
+
+        return 1 / ((src_off[:, None] - dst_off[None, :]).abs() + 1)
+
+
 class SparseStore():
 
     def __init__(self, name='store', max_cap=2000, device='cpu', out_device='cuda', **property_spec):
