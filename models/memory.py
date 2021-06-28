@@ -24,6 +24,7 @@ class Memory(nn.Module):
         self._states = {}
         self._store = None
         self._rel = None
+        self.cutoff = None
 
     # exp_rand sample
     # def sample_frames(self, n):
@@ -60,7 +61,7 @@ class Memory(nn.Module):
     #         pos_idx, neg_idx
     # ################################################################
     # augmented sample
-    def sample_frames(self, n_anchor, n_recent=0, n_pair=1, n_try=5):
+    def sample_frames(self, n_anchor, n_recent=0, n_pair=1, n_try=10):
         n_frame = len(self._store)
         for _ in range(n_try):
             # combination of most recent frames and random frames prior to those
@@ -69,16 +70,20 @@ class Memory(nn.Module):
                 torch.arange(n_frame - n_recent, n_frame)])
             relevance = self._rel[ank_idx, :self.n_frame]
             # sample
-            cutoff = relevance.where(
-                relevance > 0, torch.tensor(np.nan).to(relevance)).nanquantile(
-                torch.tensor([0.1, 0.9]).to(relevance),
-                dim=1, keepdim=True)
+            if self.cutoff is None:
+                cutoff = relevance.where(
+                    relevance > 0, torch.tensor(np.nan).to(relevance)).nanquantile(
+                    torch.tensor([0.1, 0.9]).to(relevance),
+                    dim=1, keepdim=True)
+                cutoff[1] = cutoff[1].clamp(min=0.4, max=0.7)
+            else:
+                cutoff = torch.tensor(self.cutoff)
             if cutoff.isfinite().all():
                 break
         else:
             return [[None] * 3] * 2 + [[None] * 2]
 
-        pos_prob = (relevance >= cutoff[1].clamp(max=0.4)).to(torch.float)
+        pos_prob = (relevance >= cutoff[1]).to(torch.float)
         neg_prob = (relevance <= cutoff[0]).to(torch.float)
         pos_idx = torch.multinomial(pos_prob, n_pair, replacement=True)
         neg_idx = torch.multinomial(neg_prob, n_pair, replacement=True)
@@ -146,7 +151,7 @@ class Memory(nn.Module):
 class SIoUMemory(Memory):
     def __init__(self, capacity=Memory.MAX_CAP, n_probe=1200, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
         SIoUM_SPEC = {
-            'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': 'cuda'},
+            'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': out_device},
             'img': {'shape': (3,) + img_size, 'default': np.nan},
             'pose': {'shape': (3, 4), 'default': np.nan},
             'K': {'shape': (3, 3), 'default': np.nan},
@@ -192,8 +197,9 @@ class SparseStore():
         batch = []
         for name, val in values.items():
             prop_shape = self.buf[name]['shape']
-            assert prop_shape == val.shape[-len(prop_shape):]
-            batch.append(val.shape[:-len(prop_shape)])
+            prop_shape_st = len(val.shape) - len(prop_shape)
+            assert prop_shape == val.shape[prop_shape_st:]
+            batch.append(val.shape[:prop_shape_st])
         # coherent and linear indexing
         assert all(b == batch[0] for b in batch) and len(batch[0]) <= 1
 

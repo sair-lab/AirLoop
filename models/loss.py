@@ -107,8 +107,9 @@ class MemReplayLoss():
                 if not self.args.gd_only:
                     self.viz.show(img, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='Out/Points', step=n_iter)
 
+                H, W = img.shape[2:]
                 if isinstance(self.memory, SIoUMemory):
-                    N, (H, W) = ank_batch['pos'].shape[1], img.shape[2:]
+                    N = ank_batch['pos'].shape[1]
 
                     # project points from pos to ank
                     mem_pts_scr = self.projector.world2pix(pos_batch['pos'].reshape(-1, N, 3), (H, W), ank_batch['pose'], ank_batch['K'], ank_batch['depth_map'])[0]

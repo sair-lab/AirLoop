@@ -112,7 +112,7 @@ def main(args):
         log_dir = args.log_dir
         # timestamp runs into the same logdir
         if os.path.exists(log_dir) and os.path.isdir(log_dir):
-        from datetime import datetime
+            from datetime import datetime
             log_dir = os.path.join(log_dir, datetime.now().strftime('%b%d_%H-%M-%S'))
         writer = SummaryWriter(log_dir)
         tb = program.TensorBoard()
