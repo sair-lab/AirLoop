@@ -5,6 +5,7 @@ import bz2
 import glob
 import torch
 import pickle
+import pathlib
 import numpy as np
 from os import path
 import pandas as pd
@@ -14,7 +15,6 @@ from torchvision.transforms import functional as F
 from utils.geometry import pose2mat
 
 from .augment import AirAugment
-
 from .base import DatasetBase
 
 
@@ -22,7 +22,7 @@ class TartanAir(DatasetBase):
     NED2EDN = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
 
     def __init__(self, root, scale=1, augment=True, catalog_dir=None):
-        super().__init__(root, 'tartanair', catalog_dir)
+        super().__init__(pathlib.Path(root) / 'tartanair', 'tartanair', catalog_dir)
         # Camera Intrinsics of TartanAir Dataset
         fx, fy, cx, cy = 320, 320, 320, 240
         self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
