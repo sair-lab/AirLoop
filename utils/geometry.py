@@ -196,9 +196,8 @@ def feature_pt_ncovis(pos0, pts1, depth1, pose1, K1, projector, grid_sample, eps
     binned_pts0_scr1 = kn.denormalize_pixel_coordinates(pts0_scr1, *grid_size).round()
     # binning
     B, N, _ = binned_pts0_scr1.shape
-    bs = torch.arange(B).repeat_interleave(N).unsqueeze(1)
-    bp0s1_b = torch.cat([bs.to(binned_pts0_scr1), binned_pts0_scr1.reshape(-1, 2)], axis=-1)
-    bp0s1_b = bp0s1_b[bp0s1_b.isfinite().all(dim=-1)]
+    valid_b, valid_n = binned_pts0_scr1.isfinite().all(dim=-1).nonzero(as_tuple=True)
+    bp0s1_b = torch.cat([valid_b[:, None], binned_pts0_scr1[valid_b, valid_n]], axis=-1)
 
     A1 = torch.zeros(B).to(Ax)
     if bp0s1_b.numel() != 0:

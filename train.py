@@ -93,10 +93,15 @@ def train(model, loader, optimizer, counter, args, writer=None, scheduler=None):
 
 
 def main(args):
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
+    if args.deterministic >= 1:
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        random.seed(args.seed)
+    if args.deterministic >= 2:
+        torch.backends.cudnn.benchmark = False
+    if args.deterministic >= 3:
+        torch.set_deterministic(True)
 
     loader, img_res = get_datasets(args)
     if args.devices is None:
@@ -167,6 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=5, help="training patience")
     parser.add_argument("--num-workers", type=int, default=4, help="workers of dataloader")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
+    parser.add_argument("--deterministic", type=int, default=3, help='Level of determinism.')
     parser.add_argument("--viz_start", type=int, default=np.inf, help='Visualize starting from iteration')
     parser.add_argument("--viz_freq", type=int, default=1, help='Visualize every * iteration(s)')
     parser.add_argument("--eval-split-seed", type=int, default=42, help='Seed for splitting the dataset')

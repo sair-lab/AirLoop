@@ -180,7 +180,7 @@ class OffsetMemory(Memory):
         }
         super().__init__(OFFSETM_SPEC, capacity, swap_dir, out_device)
         self.STATE_DICT.append('cutoff')
-        self.cutoff = [1 / (window / 2 + 1), 1 / (window / 2 + 1)]
+        self.cutoff = [1 / (window + 0.5), 1 / (window + 0.5)]
 
     def get_rel(self, src_idx, dst_idx):
         src_off = self._store[src_idx, ['offset']]['offset']
