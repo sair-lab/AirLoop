@@ -291,29 +291,31 @@ class FeatureNet_(nn.Module):
         ('features.35', 512, 16),
     ]
 
-    def __init__(self, n_features, res, feat_dim):
+    def __init__(self, n_features, res, feat_dim, gd_only=False):
         super().__init__()
         self.n_features = n_features
+        self.gd_only = gd_only
 
         # remove extra modules and hook up full-scale feature conv
         vgg = models.vgg19(pretrained=True)
         vgg.avgpool = vgg.classifier = nn.Identity()
 
         self.encoder = FPNEncoder(vgg, self.CKPTS)
-        self.decoder = FPNDecoder(self.CKPTS, res, 1)
-        self.trans = nn.ModuleList([nn.Sequential(
-            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
-            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
-            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
-            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
-            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
-            *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
-        ) for (_, ch, _) in self.CKPTS])
-        self.proj = nn.Sequential(
-            nn.Linear(sum(ckpt[1] for ckpt in self.CKPTS), 1024), nn.ReLU(),
-            nn.Linear(1024, 512), nn.ReLU(),
-            nn.Linear(512, feat_dim)
-        )
+        if not self.gd_only:
+            self.decoder = FPNDecoder(self.CKPTS, res, 1)
+            self.trans = nn.ModuleList([nn.Sequential(
+                *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+                *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+                *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+                *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+                *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+                *make_layer(ch, ch, bn=nn.GroupNorm(min(ch // 4, 32), ch)),
+            ) for (_, ch, _) in self.CKPTS])
+            self.proj = nn.Sequential(
+                nn.Linear(sum(ckpt[1] for ckpt in self.CKPTS), 1024), nn.ReLU(),
+                nn.Linear(1024, 512), nn.ReLU(),
+                nn.Linear(512, feat_dim)
+            )
         self.const_boarder = ConstantBorder(border=4, value=0)
 
         self.grid_sample = GridSample()
@@ -322,6 +324,9 @@ class FeatureNet_(nn.Module):
         b, _, h, w = img.shape
 
         feature_maps_orig = self.encoder(img)
+        if self.gd_only:
+            return feature_maps_orig
+
         score_map = self.decoder(feature_maps_orig)
 
         feature_maps = [trans(feature_maps_orig[ckpt[0]]) for ckpt, trans in zip(self.CKPTS, self.trans)]
@@ -348,12 +353,14 @@ class FeatureNet_(nn.Module):
 
 
 class FeatureNet(models.VGG):
-    def __init__(self, res=(240, 320), feat_dim=256, feat_num=500, gd_dim=1024, sample_pass=0):
+    def __init__(self, res=(240, 320), feat_dim=256, feat_num=500, gd_dim=1024, sample_pass=0, gd_only=False):
         super().__init__(models.vgg13().features)
-        self.feat_dim, self.feat_num, self.sample_pass = feat_dim, feat_num, sample_pass
-        self.features = FeatureNet_(self.feat_num, res, feat_dim)
+        del self.classifier
+        self.feat_dim, self.feat_num, self.sample_pass=feat_dim, feat_num, sample_pass
+        self.features = FeatureNet_(self.feat_num, res, feat_dim, gd_only)
         self.gd_indim = self.features.CKPTS[-1][1]
         self.global_desc = GeM(self.gd_indim, gd_dim)
+        self.gd_only = gd_only
         # self.global_desc = AttnFC(self.gd_indim, gd_dim, emb_dim=256, n_pass=2)
         # !full
         self.graph = nn.Identity()
@@ -377,15 +384,15 @@ class FeatureNet(models.VGG):
         #     TransformerLayer(self.feat_dim),
         #     TransformerLayer(self.feat_dim),
         #     TransformerLayer(self.feat_dim))
-        self.pos_enc = nn.Sequential(
-            nn.Linear(2, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU(),
-            nn.Linear(256, self.feat_dim))
-        self.pos_enc_gd = nn.Sequential(
-            nn.Linear(2, 256), nn.ReLU(),
-            nn.Linear(256, 1024), nn.ReLU(),
-            nn.Linear(1024, self.gd_indim))
-        self.nms = nms.NonMaximaSuppression2d((5, 5))
+        # self.pos_enc = nn.Sequential(
+        #     nn.Linear(2, 256), nn.ReLU(),
+        #     nn.Linear(256, 256), nn.ReLU(),
+        #     nn.Linear(256, self.feat_dim))
+        # self.pos_enc_gd = nn.Sequential(
+        #     nn.Linear(2, 256), nn.ReLU(),
+        #     nn.Linear(256, 1024), nn.ReLU(),
+        #     nn.Linear(1024, self.gd_indim))
+        # self.nms = nms.NonMaximaSuppression2d((5, 5))
         # self.matcher = AttnMatcher(feat_dim)
 
     def forward(self, img=None, desc0=None, desc1=None):
@@ -401,7 +408,10 @@ class FeatureNet(models.VGG):
 
         B, _, H, W = inputs.shape
 
-        points, pointness, scores, descriptors, raw_features, feature_maps = self.features(inputs)
+        if self.gd_only:
+            feature_maps = self.features(inputs)
+        else:
+            points, pointness, scores, descriptors, raw_features, feature_maps = self.features(inputs)
 
         # fea = features.permute(0, 2, 3, 1).reshape(B, -1, self.feat_dim)
 
@@ -412,9 +422,11 @@ class FeatureNet(models.VGG):
         gd, gd_locs = self.global_desc(fea.reshape(B, self.gd_indim, fea.shape[-1] * fea.shape[-2]).transpose(-1, -2))
         # fea = fea[:, ::4]
 
-        N = self.feat_num
-        return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), ((gd, gd_locs) if self.training else gd), None
-        # return fea[:, ::4, :], points.reshape(B, N, 2), pointness, scores.reshape(B, N), gd, gd_locs
+        if self.gd_only:
+            return (gd, gd_locs) if self.training else gd
+        else:
+            N = self.feat_num
+            return descriptors.reshape(B, N, self.feat_dim), points.reshape(B, N, 2), pointness, scores.reshape(B, N), ((gd, gd_locs) if self.training else gd)
 
     @staticmethod
     def _append_group(grouped_samples, sample_pass, new_group):
@@ -422,23 +434,6 @@ class FeatureNet(models.VGG):
         BS, *_shape = grouped_samples.shape
         raveled = grouped_samples.reshape(BS // max(sample_pass, 1), sample_pass, *_shape)
         return torch.cat((raveled, new_group.unsqueeze(1)), dim=1)
-
-
-    # # !dino
-    # def update_teacher(self):
-    #     with torch.no_grad():
-    #         param_s = self.global_desc.state_dict()
-    #         param_t = self.global_desc_t.state_dict()
-    #         for ps, pt in zip(param_s, param_t):
-    #             param_t[pt].data.copy_(param_t[pt].data * self.mom + param_s[ps].data * (1 - self.mom))
-
-    # def switch_teacher(self):
-    #     with torch.no_grad():
-    #         param_s = self.global_desc.state_dict()
-    #         param_t = self.global_desc_t.state_dict()
-    #         for ps, pt in zip(param_s, param_t):
-    #             param_t[pt].data.copy_(param_s[ps].data)
-    # # !dino
 
 
 def make_layer(in_chan, out_chan, kernel_size=3, stride=1, padding=1, conv=nn.Conv2d, bn=None, activation=nn.ReLU(), **kwargs):

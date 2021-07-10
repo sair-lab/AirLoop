@@ -35,10 +35,13 @@ def evaluate(net, loader, counter, args, writer=None):
 
     for images, aux, env_seq in tqdm.tqdm(loader):
         images = images.to(args.device)
-        depths = depths.to(args.device)
-        poses = poses.to(args.device)
-        K = K.to(args.device)
-        descriptors, points, pointness, scores, gd, _ = net(images)
+
+        if not args.gd_only:
+            descriptors, points, pointness, scores, gd = net(images)
+        else:
+            gd = net(images)
+            descriptors, points, pointness, scores = None, None, None, None
+
         for evaluator in evaluators:
             evaluator.observe(descriptors, points, scores, gd, pointness, aux, images, env_seq)
 
@@ -100,7 +103,7 @@ def main(args):
         args.devices = ['cuda:%d' % i for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else ['cpu']
     args.device = args.devices[0]
 
-    model = FeatureNet(img_res, args.feat_dim, args.feat_num, args.gd_dim).to(args.device)
+    model = FeatureNet(img_res, args.feat_dim, args.feat_num, args.gd_dim, gd_only=args.gd_only).to(args.device)
     if args.load:
         load_model(model, args.load, device=args.device)
     if not args.no_parallel:
@@ -143,6 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--save-freq", type=int, default=33558, help="model saving frequency")
     parser.add_argument("--mem-save", type=str, default=None, help="memory save path")
     parser.add_argument("--mas", action='store_true', help="enable MAS")
+    parser.add_argument("--gd-only", action='store_true', help="Avoid training local feature")
     parser.add_argument("--gd-dim", type=int, default=1024, help="global descriptor dimension")
     parser.add_argument('--scale', type=float, default=0.5, help='image resize')
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")

@@ -26,14 +26,17 @@ class MemReplayLoss():
         self.projector = Projector()
         self.grid_sample = GridSample()
         self.augment = AirAugment(scale=args.scale)
-        self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/air-slam/.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
+        self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else 'cuda')
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
-        self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.n_triplet, self.n_recent, self.n_pair = 4, 2, 1
         self.min_sample_size = 32
         self.gd_match = GlobalDescMatchLoss(n_triplet=self.n_triplet, n_pair=self.n_pair, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        if args.gd_only:
+            self.score_corner, self.desc_match = None, None
+        else:
+            self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+            self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.mas = MASLoss(self.memory, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.args = args
 
@@ -62,21 +65,24 @@ class MemReplayLoss():
 
         img, depth_map, pose, K = img.to(device), depth_map.to(device), pose.to(device), K.to(device)
 
-        descriptors, points, score_map, scores, gd, _ = net(img=img)
+        loss = 0
+        if self.args.gd_only:
+            gd = net(img=img)
+        else:
+            descriptors, points, score_map, scores, gd = net(img=img)
+            def batch_project(pts):
+                return self.projector.cartesian(pts, depth_map, pose, K)
 
-        def batch_project(pts):
-            return self.projector.cartesian(pts, depth_map, pose, K)
-
-        def sim_metric(x, y):
-            cosine = PairwiseCosine(inter_batch=True)
-            return cosine(x, y)
-            # return net(desc0=x, desc1=y)
-
-        cornerness = self.beta[0] * self.score_corner(score_map, img, batch_project)
-        neg_st = self.n_triplet * (1 + self.n_pair)
-        desc_match = self.beta[1] * self.desc_match(sim_metric, img[:neg_st], points[:neg_st], descriptors[:neg_st], scores[:neg_st], depth_map[:neg_st], pose[:neg_st], K[:neg_st])
+            def sim_metric(x, y):
+                cosine = PairwiseCosine(inter_batch=True)
+                return cosine(x, y)
+                # return net(desc0=x, desc1=y)
+            cornerness = self.beta[0] * self.score_corner(score_map, img, batch_project)
+            neg_st = self.n_triplet * (1 + self.n_pair)
+            desc_match = self.beta[1] * self.desc_match(sim_metric, img[:neg_st], points[:neg_st], descriptors[:neg_st], scores[:neg_st], depth_map[:neg_st], pose[:neg_st], K[:neg_st])
+            loss += cornerness + desc_match
         gd_match = self.beta[2] * self.gd_match(gd)
-        loss = cornerness + desc_match + gd_match
+        loss += gd_match
 
         if self.args.mas and len(self.memory.envs()) > 1:
             mas = self.beta[3] * self.mas(net, env)
@@ -84,10 +90,11 @@ class MemReplayLoss():
 
         if self.writer is not None:
             n_iter = self.counter.steps if self.counter is not None else 0
-            self.writer.add_scalars('Loss', {'cornerness': cornerness,
-                                             'desc': desc_match,
-                                             'global': gd_match,
-                                             'all': loss}, n_iter)
+            self.writer.add_scalars('Loss', {'global': gd_match}, n_iter)
+            if not self.args.gd_only:
+                self.writer.add_scalars('Loss', {'cornerness': cornerness,
+                                                 'desc': desc_match,
+                                                 'all': loss}, n_iter)
             if self.args.mas and len(self.memory.envs()) > 1:
                 self.writer.add_scalars('Loss', {'mas': mas}, n_iter)
             self.writer.add_histogram('Misc/RelN', neg_rel, n_iter)
@@ -96,7 +103,8 @@ class MemReplayLoss():
 
             # show triplets
             if self.viz is not None and n_iter >= self.viz_start and n_iter % self.viz_freq == 0:
-                self.viz.show(img, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='Out/Points', step=n_iter)
+                if not self.args.gd_only:
+                    self.viz.show(img, points, 'hot', values=scores.squeeze(-1).detach().cpu().numpy(), name='Out/Points', step=n_iter)
 
                 if isinstance(self.memory, SIoUMemory):
                     N, (H, W) = ank_batch['pos'].shape[1], img.shape[2:]
