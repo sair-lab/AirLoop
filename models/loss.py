@@ -12,10 +12,11 @@ from datasets import AirAugment
 from utils import Visualizer
 from models.memory import SIoUMemory, OffsetMemory
 from utils import GridSample, Projector, PairwiseCosine, ConsecutiveMatch, gen_probe
+from losses import get_ll_loss
 
 
 class MemReplayLoss():
-    def __init__(self, beta=[1, 1, 1, 10], writer=None, viz_start=float('inf'), viz_freq=200, counter=None, args=None):
+    def __init__(self, beta=[1, 1, 1, 100], writer=None, viz_start=float('inf'), viz_freq=200, counter=None, args=None):
         super().__init__()
         self.writer, self.beta, self.counter = writer, beta, counter
         self.viz_start, self.viz_freq = viz_start, viz_freq
@@ -38,7 +39,7 @@ class MemReplayLoss():
         else:
             self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
             self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.mas = MASLoss(self.memory, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.ll_loss = get_ll_loss(args, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.args = args
 
     def __call__(self, net, img, aux, env):
@@ -85,9 +86,14 @@ class MemReplayLoss():
         gd_match = self.beta[2] * self.gd_match(gd)
         loss += gd_match
 
-        if self.args.mas and len(self.memory.envs()) > 1:
-            mas = self.beta[3] * self.mas(net, env)
-            loss += mas
+        # forgetting prevention
+        if self.ll_loss is not None:
+            if self.args.ll_method.lower() in ['mas', 'ewc']:
+                ll_loss = self.beta[3] * self.ll_loss(net, gd)
+                loss += ll_loss
+            elif self.args.ll_method.lower() == 'rkd':
+                ll_loss = self.beta[3] * self.ll_loss(net, gd, img)
+                loss += ll_loss
 
         if self.writer is not None:
             n_iter = self.counter.steps if self.counter is not None else 0
@@ -96,8 +102,8 @@ class MemReplayLoss():
                 self.writer.add_scalars('Loss', {'cornerness': cornerness,
                                                  'desc': desc_match,
                                                  'all': loss}, n_iter)
-            if self.args.mas and len(self.memory.envs()) > 1:
-                self.writer.add_scalars('Loss', {'mas': mas}, n_iter)
+            if self.ll_loss is not None:
+                self.writer.add_scalars('Loss', {self.args.ll_method.lower(): ll_loss}, n_iter)
             self.writer.add_histogram('Misc/RelN', neg_rel, n_iter)
             self.writer.add_histogram('Misc/RelP', pos_rel, n_iter)
             self.writer.add_scalars('Misc/MemoryUsage', {'len': len(self.memory)}, n_iter)
@@ -374,37 +380,3 @@ class DiscriptorMatchLoss(nn.Module):
         loss = ((1 - cos) * match + cos * (1 - match)) / sig + norm_const
         return loss
 
-
-class MASLoss():
-    def __init__(self, memory, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None):
-        self.writer, self.counter = writer, counter
-        self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq
-        self.old_params = None
-        self.memory = memory
-        self.cosine = PairwiseCosine()
-        self.n_triplet = 4
-
-    def __call__(self, model, cur_env):
-        if self.old_params is None:
-            self.old_params = [t.data.clone() for t in model.parameters()]
-
-        old_env = np.random.choice([env for env in self.memory.envs() if env != cur_env[0]])
-        self.memory.swap(old_env)
-        _, (ank_batch, pos_batch, neg_batch), _ = self.memory.sample_frames(self.n_triplet)
-        # !hardcode
-        img = recombine('img', ank_batch, pos_batch, neg_batch).to('cuda')
-
-        ld, _, _, _, (gd, _), _ = model(img=img)
-        ld = F.normalize(ld, dim=-1)
-        gd = F.normalize(gd, dim=-1)
-
-        sum_l = ld.sum(dim=(0, 1), keepdims=True).detach().expand_as(ld) / ld.shape[1]
-        sum_g = gd.sum(dim=0, keepdims=True).detach().expand_as(gd)
-        gs = ag.grad([ld, gd], model.parameters(), [sum_l, sum_g])
-        loss = 0
-        for g, param, old_param in zip(gs, model.parameters(), self.old_params):
-            loss += ((g * (param - old_param)) ** 2).sum()
-
-        self.memory.swap(cur_env[0])
-
-        return loss

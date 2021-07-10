@@ -86,6 +86,8 @@ def train(model, loader, optimizer, counter, args, writer=None, scheduler=None):
                 save_model(model, '%s.%s' % (args.save, last_env))
             if args.mem_save is not None:
                 criterion.memory.save('%s.%s' % (args.mem_save, last_env))
+            if args.ll_method is not None:
+                criterion.ll_loss.save(task=last_env)
         else:
             save_model(model, '%s.epoch%d' % (args.save, epoch))
 
@@ -147,7 +149,9 @@ if __name__ == "__main__":
     parser.add_argument("--save", type=str, default=None, help="model file to save")
     parser.add_argument("--save-freq", type=int, default=33558, help="model saving frequency")
     parser.add_argument("--mem-save", type=str, default=None, help="memory save path")
-    parser.add_argument("--mas", action='store_true', help="enable MAS")
+    parser.add_argument("--ll-method", type=str, default=None, help="Lifelong learning method")
+    parser.add_argument("--ll-weights-load", type=str, nargs='+', help="Load paths for regularization weights")
+    parser.add_argument("--ll-weights-save", type=str, help="Save path for regularization weights")
     parser.add_argument("--gd-only", action='store_true', help="Avoid training local feature")
     parser.add_argument("--gd-dim", type=int, default=1024, help="global descriptor dimension")
     parser.add_argument('--scale', type=float, default=0.5, help='image resize')
