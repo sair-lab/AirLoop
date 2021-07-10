@@ -1,7 +1,38 @@
 #!/usr/bin/env python3
 
+import os
 import time
 import torch
+import numpy as np
+from collections import deque
+import torch.nn as nn
+
+
+def rectify_savepath(path, overwrite=False):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    save_path, save_file_dup = path, 0
+    while os.path.exists(save_path) and not overwrite:
+        save_file_dup += 1
+        save_path = path + '.%d' % save_file_dup
+
+    return save_path
+
+
+def save_model(model, path):
+    model = model.module if isinstance(model, nn.DataParallel) else model
+
+    save_path = rectify_savepath(path)
+
+    torch.save(model.state_dict(), save_path)
+    print('Saved model: %s' % save_path)
+
+
+def load_model(model, path, device='cuda'):
+    model.load_state_dict(torch.load(path, map_location=device))
+    torch.save(model.state_dict(), path)
+    print('Loaded model: %s' % path)
+    return model
 
 
 class GlobalStepCounter():
@@ -15,6 +46,23 @@ class GlobalStepCounter():
     def step(self, step=1):
         self._steps += 1
         return self._steps
+
+
+class ProgressBarDescription():
+    def __init__(self, tq, ave_steps=50):
+        self.losses = deque()
+        self.tq = tq
+        self.ave_steps = ave_steps
+    
+    def update(self, loss):
+        loss = loss.item()
+        if np.isnan(loss):
+            print('Warning: nan loss.')
+        else:
+            self.losses.append(loss)
+            if len(self.losses) > self.ave_steps:
+                self.losses.popleft()
+        self.tq.set_description("Loss: %.4f at" % (np.average(self.losses)))
 
 
 class Timer:

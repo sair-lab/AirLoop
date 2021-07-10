@@ -6,9 +6,11 @@ import bz2
 import glob
 import torch
 import pickle
+import itertools
 import numpy as np
 import kornia as kn
 from os import path
+import pandas as pd
 from PIL import Image
 from copy import copy
 from torch.utils.data import Sampler
@@ -46,16 +48,8 @@ class TartanAir(Dataset):
         self.K = torch.FloatTensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
 
         # include/exclude seq with regex
-        incl_pattern = re.compile(include) if include is not None else None
-        excl_pattern = re.compile(exclude) if exclude is not None else None
-        final_list = []
-        for seq, size in zip(self.sequences, self.sizes):
-            if (incl_pattern and incl_pattern.search(seq) is None) or \
-                    (excl_pattern and excl_pattern.search(seq) is not None):
-                del self.poses[seq], self.image[seq], self.depth[seq]
-            else:
-                final_list.append((seq, size))
-        self.sequences, self.sizes = zip(*final_list) if len(final_list) > 0 else ([], [])
+        self.include_exclude(include, exclude)
+        
 
     def __len__(self):
         return sum(self.sizes)
@@ -74,11 +68,29 @@ class TartanAir(Dataset):
         split_idx = np.cumsum(np.round(ratio / sum(ratio) * total), dtype=np.int)[:-1]
         subsets = []
         for perm in np.split(np.random.default_rng(seed=seed).permutation(total), split_idx):
+            perm = sorted(perm)
             subset = copy(self)
             subset.sequences = np.take(self.sequences, perm).tolist()
             subset.sizes = np.take(self.sizes, perm).tolist()
             subsets.append(subset)
         return subsets
+
+    def summary(self):
+        return pd.DataFrame(data=[
+            seq.split(os.path.sep)[-3:] + [size] for seq, size in zip(self.sequences, self.sizes)], 
+            columns=['env', 'dif', 'id', 'size'])
+
+    def include_exclude(self, include=None, exclude=None):
+        incl_pattern = re.compile(include) if include is not None else None
+        excl_pattern = re.compile(exclude) if exclude is not None else None
+        final_list = []
+        for seq, size in zip(self.sequences, self.sizes):
+            if (incl_pattern and incl_pattern.search(seq) is None) or \
+                    (excl_pattern and excl_pattern.search(seq) is not None):
+                del self.poses[seq], self.image[seq], self.depth[seq]
+            else:
+                final_list.append((seq, size))
+        self.sequences, self.sizes = zip(*final_list) if len(final_list) > 0 else ([], [])
 
 
 class TartanAirTest(Dataset):
@@ -119,14 +131,29 @@ class TartanAirTest(Dataset):
 
 
 class AirSampler(Sampler):
-    def __init__(self, data, batch_size, shuffle='all', overlap=True):
+    def __init__(self, data, batch_size, shuffle='all', consecutive=True, overlap=True):
         self.seq_sizes = [(seq_id, size) for seq_id, size in enumerate(data.sizes)]
         if shuffle == 'seq': np.random.shuffle(self.seq_sizes)
         self.bs = batch_size
         self.batches = []
         for seq_id, size in self.seq_sizes:
             b_start = np.arange(0, size - self.bs, 1 if overlap else self.bs)
-            self.batches += [list(zip([seq_id]*self.bs, range(st, st+self.bs))) for st in b_start]
+            frame_idx = np.arange(0, size)
+            if not consecutive: np.random.shuffle(frame_idx)
+            batch = [list(zip([seq_id]*self.bs, frame_idx[st:st+self.bs])) for st in b_start]
+            if shuffle == 'batch': np.random.shuffle(batch)
+            self.batches += batch
+
+        if shuffle == 'env' or shuffle == 'all':
+            all_batches = itertools.chain.from_iterable(self.batches)
+            self.batches = []
+            # get samples from the same environment
+            for _, batches in itertools.groupby(all_batches, lambda b: data.sequences[b[0]].split(os.path.sep)[-3]):
+                env_batches = list(batches)
+                np.random.shuffle(env_batches)
+                # slice back into chunks
+                self.batches += [list(batch) for batch in itertools.zip_longest(*([iter(env_batches)] * batch_size))]
+            
         if shuffle == 'all': np.random.shuffle(self.batches)
 
     def __iter__(self):

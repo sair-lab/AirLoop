@@ -31,10 +31,18 @@ class AirAugment(nn.Module):
         scaled_rotation = torch.block_diag(kn.angle_to_rotation_matrix(angle)[0] @ torch.diag(scale), torch.ones(1))
         scaled_rotation[:2, 2] = center - scaled_rotation[:2, :2] @ center + translation
 
-        return scaled_rotation @ K
+        return scaled_rotation.to(K) @ K
 
     def forward(self, image, K, depth=None):
-        in_size = np.array(image.size[::-1])
+        if isinstance(image, Image.Image):
+            in_size = np.array(image.size[::-1])
+            image = self.resize_totensor(image)
+            depth = depth if depth is None else self.resize_totensor(depth)
+        elif isinstance(image, torch.Tensor):
+            in_size = np.array(image.shape[1:])
+            image = self.resize_totensor.transforms[0](image)
+            depth = depth if depth is None else self.resize_totensor.transforms[0](depth)
+
         center, scale, angle = in_size/2, self.img_size/in_size, 0
 
         transform = np.random.choice(np.arange(len(self.p)), p=self.p)
@@ -54,13 +62,17 @@ class AirAugment(nn.Module):
             image = F.rotate(image, angle, trans.resample, trans.expand, trans.center, trans.fill)
             image = F.center_crop(image, tuple(in_size))
             # fill oob depth with inf so that projector can mask them out
-            depth = depth if depth is None else F.rotate(depth, angle, trans.resample, trans.expand, trans.center, float('inf'))
+            if depth is not None and isinstance(depth, torch.Tensor):
+                # torch 1.7.1: F.rotate doesn't support fill for Tensor
+                device = depth.device
+                depth = F.to_pil_image(depth, mode='F')
+                depth = F.rotate(depth, angle, trans.resample, trans.expand, trans.center, float('inf'))
+                depth = self.resize_totensor(depth).to(device)
 
         elif transform == 3:
             image = self.rand_color(image)
 
-        image = self.resize_totensor(image)
         translation = self.img_size / 2 - center
         K = self.apply_affine(K, translation, center, scale, angle)
 
-        return (image, K) if depth is None else (image, K, self.resize_totensor(depth))
+        return (image, K) if depth is None else (image, K, depth)

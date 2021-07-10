@@ -131,3 +131,6 @@ dmypy.json
 .vscode/
 data/
 vidout
+logs
+unused
+playground

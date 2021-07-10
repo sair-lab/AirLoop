@@ -1,16 +1,19 @@
-import torch
-import numpy as np
-import pickle, bz2
-import torch.nn as nn
-from collections import deque
-from .geometry import Projector
 import kornia.geometry.conversions as C
+import numpy as np
+import os
+import pickle, bz2
+import torch
+import tqdm
+
 from prettytable import PrettyTable, MARKDOWN
-from models import ConsecutiveMatch, GridSample
+
+from .geometry import Projector, gen_probe, feature_pt_ncovis
+from .misc import GlobalStepCounter
+from .utils import ConsecutiveMatch, GridSample
 
 
 class MatchEvaluator():
-    def __init__(self, back=[1], viz=None, viz_dist_min=0, viz_dist_max=100, top=None, writer=None, counter=None):
+    def __init__(self, back=[1], viz=None, viz_dist_min=0, viz_dist_max=100, top=None, writer=None, counter=None, args=None):
         self.back, self.top = back, top
         self.viz, self.viz_min, self.viz_max = viz, viz_dist_min, viz_dist_max
         self.hist = []
@@ -21,9 +24,10 @@ class MatchEvaluator():
         self.counter = counter if counter is not None else GlobalStepCounter()
         self.cur_env = None
         self.env_err_seg = {}
+        self.args = args
 
     @torch.no_grad()
-    def observe(self, descriptors, points, scores, score_map, depth_map, poses, Ks, imgs, env_seq):
+    def observe(self, descriptors, points, scores, gd, score_map, depth_map, poses, Ks, imgs, env_seq):
         B, N, _ = points.shape
         _, _, H, W = imgs.shape
         top = N if self.top is None else self.top
@@ -120,6 +124,10 @@ class MatchEvaluator():
             print('Evaluation: step %d' % n_iter)
             print(result.get_string(sortby='n-back'))
 
+        if self.args.eval_save is not None:
+            np.savez_compressed('%s-match-err' % self.args.eval_save, **{str(k): v for k, v in self.error.items()})
+            np.savez_compressed('%s-match-seg' % self.args.eval_save, **{str(k): v for k, v in self.error.items()})
+
         # clear history
         self.error = {b: [] for b in self.back}
         self.hist = []
@@ -152,3 +160,126 @@ def reproj_error(pts_src, K_src, pose_src, depth_src, pts_dst, K_dst, pose_dst, 
     pts_prj, _ = Projector._project_points(pts_src, depth_src, cam_src, cam_dst)
     diff = C.denormalize_pixel_coordinates(pts_prj, H, W) - C.denormalize_pixel_coordinates(pts_dst, H, W)
     return torch.hypot(diff[..., 0], diff[..., 1])
+
+
+class RecognitionEvaluator():
+    def __init__(self, loader, n_feature=250, D_frame=256, ks=[2, 5, 10], viz=None, writer=None, counter=None, args=None):
+        self.viz = viz
+        self.probe_pts, self.gds, self.n_observed = None, None, 0
+        self.adj_mat = None
+        self.loader = loader
+        self.env_sizes = self.loader.dataset.summary().groupby('env')['size'].sum().reset_index()
+        self.n_feature, self.D_frame = n_feature, D_frame
+
+        self.grid_sample = GridSample()
+        self.projector = Projector()
+        self.writer = writer
+        self.counter = counter if counter is not None else GlobalStepCounter()
+        self.cur_env = None
+        self.env_stats = {}
+        self.ks = ks
+        self.args = args
+
+    @torch.no_grad()
+    def observe(self, descriptors, points, scores, gd, score_map, depth_map, poses, Ks, imgs, env_seq):
+        env = env_seq[0][0]
+        if self.cur_env != env:
+            last_env, self.cur_env = self.cur_env, env
+            if last_env is not None:
+                self.env_stats[last_env] = (self.probe_pts, self.gds, self.adj_mat, self.n_observed)
+
+            # restore old context / create new
+            if env in self.env_stats:
+                self.probe_pts, self.gds, self.adj_mat, self.n_observed = self.env_stats[env]
+            else:
+                n_frames = int(self.env_sizes[self.env_sizes['env'] == env]['size'])
+                self.probe_pts = torch.zeros(n_frames, 1200, 3).fill_(np.nan).to(points)
+                self.gds = torch.zeros(n_frames, self.D_frame).fill_(np.nan).to(gd)
+                self.adj_mat = torch.zeros(n_frames, n_frames).fill_(np.nan).to(points)
+                self.n_observed = 0
+
+        # record history
+        B, _, H, W = depth_map.shape
+        points = gen_probe(depth_map)
+        new_n_observed = self.n_observed + B
+        self.probe_pts[self.n_observed:new_n_observed] = self.projector.pix2world(points, depth_map, poses, Ks)
+        self.gds[self.n_observed:new_n_observed] = gd
+        self.n_observed = new_n_observed
+
+        # fill adjacency matrix
+
+    def report(self):
+        self.env_stats[self.cur_env] = (self.probe_pts, self.gds, self.adj_mat, self.n_observed)
+
+        if self.args.eval_save is not None:
+            from utils import PairwiseCosine
+            cosine = PairwiseCosine(inter_batch=True)
+            np.savez_compressed(self.args.eval_save, **{env: cosine(gd[:n_observed, None], gd[:n_observed, None])[:, :, 0, 0].cpu().numpy() for env, (_, gd, _, n_observed) in self.env_stats.items()})
+            # np.savez_compressed('workspace/air-slam/.cache/gd_mat_fullll_gem_abandonedfactory_abandonedfactory-night', **{env: cosine(gd[:n_observed, None], gd[:n_observed, None])[:, :, 0, 0].cpu().numpy() for env, (_, gd, _, n_observed) in self.env_stats.items()})
+
+        result = PrettyTable(['Env Name',
+                            'Recall @(%s)' % self._fmt_list(self.ks, '%d', '/'),
+                            'Ave Rank top-(%s)' % self._fmt_list(self.ks, '%d', '/')])
+        # result.float_format['Ave Prec'] = '.2'
+        result.align['Env Name'] = 'r'
+
+        self._build_adjacency(save_path='workspace/air-slam/.cache/adj_mat.npz')
+
+        recall, ave_rank, size = {}, {}, []
+
+        for env, (_, gd, adj_mat, n_observed) in self.env_stats.items():
+            pred_rank = torch.cdist(gd, gd).sort(dim=1, descending=False).indices
+            true_rank = adj_mat.sort(dim=1, descending=True).indices
+            recall[env] = [(pred_rank[:, :k] == true_rank[:, :1]).to(torch.float).sum(dim=1).mean() for k in self.ks]
+            ave_rank[env] = [true_rank.gather(1, pred_rank[:, :k]).to(torch.float).mean() for k in self.ks]
+            size.append(n_observed)
+
+        result.add_row(['All', self._fmt_list(np.average(np.array([recall[e] for e in self.env_stats]), axis=0, weights=size), '%.2f', '/')])
+        result.add_rows([[e, self._fmt_list(recall[e], '%.2f', '/'), self._fmt_list(ave_rank[e], '%.2f', '/')] for e in self.env_stats])
+
+        n_iter = self.counter.steps
+        if self.writer is not None:
+            # self.writer.add_scalars('Eval/Recog/Recall', {'@ %d' % b: v for b, v in recall.items()}, n_iter)
+            # self.writer.add_scalars('Eval/Recog/AveRank', {'@ %d' % b: v for b, v in all_mean.items()}, n_iter)
+            # TensorBoard supports markdown table although column alignment is broken
+            result.set_style(MARKDOWN)
+            self.writer.add_text('Eval/Match/PerSeq', result.get_string(), n_iter)
+        else:
+            print('Evaluation: step %d' % n_iter)
+            print(result.get_string(sortby='n-back'))
+
+
+    def _build_adjacency(self, load_path=None, save_path=None, chunk_size=128):
+        if load_path is not None:
+            try:
+                adj_dict = np.load(load_path)
+                for env, adj in adj_dict:
+                    adj_mat, n_observed = self.env_stats[env][2:]
+                    adj_mat[:n_observed, :n_observed] = adj
+            except:
+                pass
+            else:
+                return
+
+        n_frame = {env: 0 for env in self.env_stats}
+        for images, depths, poses, K, env_seq in tqdm.tqdm(self.loader):
+            B, env = len(images), env_seq[0][0]
+            pos0, _, adj_mat, _ = self.env_stats[env]
+            depths, poses, K = depths.to(pos0), poses.to(pos0), K.to(pos0)
+            n_total = len(pos0)
+            i = n_frame[env]
+            for chunk_start in range(0, n_total, chunk_size):
+                chunk_end = min(n_total, chunk_start + chunk_size)
+                adj_mat[chunk_start:chunk_end, i:i+B] = feature_pt_ncovis(pos0[chunk_start:chunk_end], torch.zeros(B), depths, poses, K, self.projector, self.grid_sample)
+            n_frame[env] = n_frame[env] + B
+
+        if save_path is not None:
+            adj_dict = {env: stats[2][:stats[-1], :stats[-1]].cpu().numpy() for env, stats in self.env_stats.items()}
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            np.savez_compressed(save_path, **adj_dict)
+        
+            
+    @staticmethod
+    def _fmt_list(elems, fmt, delim=', '):
+        return delim.join([fmt % e for e in elems])
+
