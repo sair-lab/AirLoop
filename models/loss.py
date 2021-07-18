@@ -57,15 +57,18 @@ class MemReplayLoss():
             return torch.zeros(1).to(device)
 
         img = recombine('img', ank_batch, pos_batch, neg_batch)
-        depth_map = recombine('depth_map', ank_batch, pos_batch, neg_batch)
-        pose = recombine('pose', ank_batch, pos_batch, neg_batch)
-        K = recombine('K', ank_batch, pos_batch, neg_batch)
 
-        if self.augment is not None:
-            augmented = [(self.augment(img_, K_, depth_map_)) for img_, K_, depth_map_ in zip(img, K, depth_map)]
-            img, K, depth_map = [torch.stack(list(tensor)) for tensor in zip(*augmented)]
-
-        img, depth_map, pose, K = img.to(device), depth_map.to(device), pose.to(device), K.to(device)
+        # only kind of memory with full groundtruth
+        if isinstance(self.memory, SIoUMemory):
+            depth_map = recombine('depth_map', ank_batch, pos_batch, neg_batch)
+            pose = recombine('pose', ank_batch, pos_batch, neg_batch)
+            K = recombine('K', ank_batch, pos_batch, neg_batch)
+            if self.augment is not None:
+                augmented = [(self.augment(img_, K_, depth_map_)) for img_, K_, depth_map_ in zip(img, K, depth_map)]
+                img, K, depth_map = [torch.stack(list(tensor)).to(device) for tensor in zip(*augmented)]
+                pose = pose.to(device)
+        elif self.augment is not None:
+            img = torch.stack([self.augment(img_).to(device) for img_ in img])
 
         loss = 0
         if self.args.gd_only:

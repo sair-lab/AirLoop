@@ -78,13 +78,15 @@ class Memory(nn.Module):
                 cutoff[1] = cutoff[1].clamp(min=0.4, max=0.7)
             else:
                 cutoff = torch.tensor(self.cutoff)
-            if cutoff.isfinite().all():
+
+            pos_prob = (relevance >= cutoff[1]).to(torch.float)
+            neg_prob = (relevance <= cutoff[0]).to(torch.float)
+
+            if cutoff.isfinite().all() and (pos_prob > 0).any(1).all() and (neg_prob > 0).any(1).all():
                 break
         else:
             return [[None] * 3] * 2 + [[None] * 2]
 
-        pos_prob = (relevance >= cutoff[1]).to(torch.float)
-        neg_prob = (relevance <= cutoff[0]).to(torch.float)
         pos_idx = torch.multinomial(pos_prob, n_pair, replacement=True)
         neg_idx = torch.multinomial(neg_prob, n_pair, replacement=True)
 

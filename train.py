@@ -140,6 +140,7 @@ def main(args):
 if __name__ == "__main__":
     # Arguements
     parser = configargparse.ArgumentParser(description='Feature Graph Networks', default_config_files=['./.cache/config.yaml'])
+    parser.add_argument("--config", is_config_file=True, help="Config file")
     parser.add_argument("--task", type=str, choices=['pretrain', 'train-envseq', 'train-envshuffle', 'train-seqshuffle', 'train-allshuffle', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
     parser.add_argument("--catalog-dir", type=str, default='./.cache/catalog', help='processed dataset')
     parser.add_argument("--no-parallel", action='store_true', help="DataParallel")
@@ -173,8 +174,8 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4, help="workers of dataloader")
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument("--deterministic", type=int, default=3, help='Level of determinism.')
-    parser.add_argument("--viz_start", type=int, default=np.inf, help='Visualize starting from iteration')
-    parser.add_argument("--viz_freq", type=int, default=1, help='Visualize every * iteration(s)')
+    parser.add_argument("--viz-start", type=int, default=np.inf, help='Visualize starting from iteration')
+    parser.add_argument("--viz-freq", type=int, default=1, help='Visualize every * iteration(s)')
     parser.add_argument("--eval-split-seed", type=int, default=42, help='Seed for splitting the dataset')
     parser.add_argument("--pretrain-percentage", type=float, default=0.0, help='Percentage of sequences for eval')
     parser.add_argument("--eval-percentage", type=float, default=0.2, help='Percentage of sequences for eval')
