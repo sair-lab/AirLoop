@@ -31,18 +31,12 @@ def get_datasets(args):
         elif 'eval' in args.task:
             data = Nordland(args.dataset_root, args.scale, augment=False, split='test', catalog_dir=args.catalog_dir)
 
-    shuffle = 'none'
-    if 'envshuffle' in args.task:
-        shuffle = 'env'
-    elif 'seqshuffle' in args.task:
-        shuffle = 'seq'
-    elif 'allshuffle' in args.task or 'pretrain' in args.task:
-        shuffle = 'all'
-    elif 'eval' in args.task:
-        shuffle = 'none'
+    seq_merge, env_merge = 'cat', 'cat'
+    if 'joint' in args.task:
+        seq_merge, env_merge = 'rand_pick', 'rand_pick'
 
     data.include_exclude(args.include, args.exclude)
-    sampler = DefaultSampler(data, args.batch_size, shuffle=shuffle, overlap=False)
+    sampler = DefaultSampler(data, args.batch_size, seq_merge=seq_merge, env_merge=env_merge, overlap=False)
     loader = DataLoader(data, batch_sampler=sampler, pin_memory=True, num_workers=args.num_workers)
     res = data.augment.img_size
 

@@ -141,7 +141,7 @@ if __name__ == "__main__":
     # Arguements
     parser = configargparse.ArgumentParser(description='Feature Graph Networks', default_config_files=['./.cache/config.yaml'])
     parser.add_argument("--config", is_config_file=True, help="Config file")
-    parser.add_argument("--task", type=str, choices=['pretrain', 'train-envseq', 'train-envshuffle', 'train-seqshuffle', 'train-allshuffle', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
+    parser.add_argument("--task", type=str, choices=['pretrain', 'train-joint', 'train-envseq', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
     parser.add_argument("--catalog-dir", type=str, default='./.cache/catalog', help='processed dataset')
     parser.add_argument("--no-parallel", action='store_true', help="DataParallel")
     parser.add_argument("--devices", type=str, nargs='+', default=None, help="Available devices")

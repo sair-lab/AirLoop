@@ -96,30 +96,37 @@ class DatasetBase(Dataset):
 
 
 class DefaultSampler(Sampler):
-    def __init__(self, dataset: DatasetBase, batch_size, shuffle='all', overlap=True):
+    def __init__(self, dataset: DatasetBase, batch_size, seq_merge='shuffle', env_merge='rand', shuffle_batch=False, overlap=True):
         self.seq_sizes = [(env_seq, dataset.get_size(*env_seq)) for env_seq in dataset.get_env_seqs()]
-        if shuffle == 'seq': np.random.shuffle(self.seq_sizes)
         self.bs = batch_size
         self.batches = []
+        env_batches = {}
         for env_seq, size in self.seq_sizes:
             frame_idx = np.arange(0, size)
             b_start = np.arange(0, size - self.bs, 1 if overlap else self.bs)
             batch = [[env_seq + (idx,) for idx in frame_idx[st:st+self.bs]] for st in b_start]
-            if shuffle == 'batch':
+            if shuffle_batch:
                 np.random.shuffle(batch)
-            self.batches += batch
+            env_batches.setdefault(env_seq[0], []).extend(batch)
 
-        if shuffle == 'env' or shuffle == 'all':
-            all_batches = itertools.chain.from_iterable(self.batches)
-            self.batches = []
-            # get samples from the same environment
-            for _, batches in itertools.groupby(all_batches, lambda b: b[0]):
-                env_batches = list(batches)
-                np.random.shuffle(env_batches)
+        if seq_merge == 'cat':
+            pass
+        elif seq_merge == 'rand_pick':
+            for env, batches in env_batches.copy().items():
+                env_samples = list(itertools.chain(*batches))
+                np.random.shuffle(env_samples)
                 # slice back into chunks
-                self.batches += [list(batch) for batch in itertools.zip_longest(*([iter(env_batches)] * batch_size))]
-
-        if shuffle == 'all': np.random.shuffle(self.batches)
+                env_batches[env] = [list(batch) for batch in itertools.zip_longest(*([iter(env_samples)] * batch_size))]
+        
+        if env_merge == 'cat':
+            self.batches = list(itertools.chain(*env_batches.values()))
+        elif env_merge == 'rand_interleave':
+            selection = sum([[env] * len(batch) for i, (env, batch) in enumerate(env_batches.items())], [])
+            np.random.shuffle(selection)
+            self.batches = [env_batches[env].pop() for env in selection]
+        elif env_merge == 'rand_pick':
+            self.batches = list(itertools.chain(*env_batches.values()))
+            np.random.shuffle(self.batches)
 
     def __iter__(self):
         return iter(self.batches)
