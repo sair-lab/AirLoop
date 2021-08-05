@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from .base import DefaultSampler
 from .tartanair import TartanAir, AirAugment
 from .nordland import Nordland
+from .robotcar import RobotCar
 
 
 def get_datasets(args):
@@ -30,6 +31,11 @@ def get_datasets(args):
             data = pretrain_data if 'pretrain' in args.task else train_data
         elif 'eval' in args.task:
             data = Nordland(args.dataset_root, args.scale, augment=False, split='test', catalog_dir=args.catalog_dir)
+    elif args.dataset == 'robotcar':
+        if 'pretrain' in args.task or 'train' in args.task:
+            data = RobotCar(args.dataset_root, args.scale, augment=False, split='train', catalog_dir=args.catalog_dir)
+        elif 'eval' in args.task:
+            data = RobotCar(args.dataset_root, args.scale, augment=False, split='test', catalog_dir=args.catalog_dir)
 
     seq_merge, env_merge = 'cat', 'cat'
     if 'joint' in args.task:

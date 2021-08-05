@@ -191,6 +191,27 @@ class OffsetMemory(Memory):
         return 1 / ((src_off[:, None] - dst_off[None, :]).abs() + 1)
 
 
+class LocationMemory(Memory):
+    def __init__(self, dist_tol=20, head_tol=15, capacity=Memory.MAX_CAP, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
+        LOCATIONM_SPEC = {
+            'img': {'shape': (3,) + img_size, 'default': np.nan},
+            'location': {'shape': (2,), 'dtype': torch.float64, 'default': np.nan},
+            'heading': {'shape': (), 'default': np.nan},
+        }
+        super().__init__(LOCATIONM_SPEC, capacity, swap_dir, out_device)
+        self.STATE_DICT.extend(['cutoff', 'head_tol'])
+        self.head_tol = head_tol
+        self.cutoff = [1 / (dist_tol * 2 + 1), 1 / (dist_tol + 1)]
+
+    def get_rel(self, src_idx, dst_idx):
+        src_info = self._store[src_idx, ['location', 'heading']]
+        dst_info = self._store[dst_idx, ['location', 'heading']]
+        dist = torch.cdist(src_info['location'], dst_info['location']).to(torch.float)
+        view_diff = (src_info['heading'][:, None] - dst_info['heading'][None, :]).abs()
+
+        return (view_diff < self.head_tol).to(torch.float) / (dist + 1)
+
+
 class SparseStore():
 
     def __init__(self, name='store', max_cap=2000, device='cpu', out_device='cuda', **property_spec):

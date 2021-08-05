@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from datasets import AirAugment
 from utils import Visualizer
-from models.memory import SIoUMemory, OffsetMemory
+from models.memory import SIoUMemory, OffsetMemory, LocationMemory
 from utils import GridSample, Projector, PairwiseCosine, ConsecutiveMatch, gen_probe
 from losses import get_ll_loss
 
@@ -28,6 +28,8 @@ class MemReplayLoss():
             self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
         elif args.dataset == 'nordland':
             self.memory = OffsetMemory(capacity=1000, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
+        elif args.dataset == 'robotcar':
+            self.memory = LocationMemory(capacity=1000, dist_tol=20, head_tol=15, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
         self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
@@ -149,6 +151,9 @@ class MemReplayLoss():
         elif isinstance(self.memory, OffsetMemory):
             offset = aux
             self.memory.store_fifo(img=imgs, offset=offset)
+        elif isinstance(self.memory, LocationMemory):
+            location, heading = aux
+            self.memory.store_fifo(img=imgs, location=location, heading=heading)
 
 
 def recombine(key, *batches):
