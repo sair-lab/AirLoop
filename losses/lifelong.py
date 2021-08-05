@@ -178,6 +178,33 @@ class EWCLoss(L2RegLoss):
         return [g ** 2 for g in gs], b // 3 * 2
 
 
+class SILoss(L2RegLoss):
+    def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100):
+        super().__init__('SI', args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb, post_backward=True, avg_method='none')
+        self.cosine = PairwiseCosine()
+        self.last_param = None
+        self.w = None
+        self.eps = 1e-1
+
+    def init_loss_sub(self) -> None:
+        self.last_param = [w.data.clone() for w in self.cur_param]
+        self.w = [torch.zeros_like(p) for p in self.cur_param]
+
+    @torch.no_grad()
+    def get_importance(self, model, gd):
+        (gd, _) = gd
+        gs = [p.grad for p in self.cur_param]
+
+        # path integral
+        cur_param = [p.data.clone() for p in self.cur_param]
+        for w, g, cur_p, last_p in zip(self.w, gs, cur_param, self.last_param):
+            w -= g * (cur_p - last_p)
+        self.last_param = cur_param
+
+        omega = [pt - p0 for pt, p0 in zip(cur_param, self.old_param)]
+        return [w / (omg ** 2 + self.eps) for w, omg in zip(self.w, omega)], len(gd)
+
+
 class RKDLoss(LifelongLoss):
     def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100):
         self._model_t_states: List[nn.Module.T_destination] = []

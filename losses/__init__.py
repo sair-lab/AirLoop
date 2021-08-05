@@ -1,4 +1,4 @@
-from .lifelong import MASLoss, RKDLoss, EWCLoss
+from .lifelong import MASLoss, RKDLoss, EWCLoss, SILoss
 
 
 def get_ll_loss(args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=1):
@@ -8,6 +8,8 @@ def get_ll_loss(args, writer=None, viz=None, viz_start=float('inf'), viz_freq=20
         loss_class = MASLoss
     elif args.ll_method.lower() == 'ewc':
         loss_class = EWCLoss
+    elif args.ll_method.lower() == 'si':
+        loss_class = SILoss
     elif args.ll_method.lower() == 'rkd':
         loss_class = RKDLoss
     else:

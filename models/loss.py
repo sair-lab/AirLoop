@@ -93,7 +93,7 @@ class MemReplayLoss():
 
         # forgetting prevention
         if self.ll_loss is not None:
-            if self.args.ll_method.lower() in ['mas', 'ewc']:
+            if self.args.ll_method.lower() in ['mas', 'ewc', 'si']:
                 loss += self.ll_loss(model=net, gd=gd)
             elif self.args.ll_method.lower() == 'rkd':
                 loss += self.ll_loss(model=net, gd=gd, img=img)
