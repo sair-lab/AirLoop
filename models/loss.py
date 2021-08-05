@@ -16,7 +16,7 @@ from losses import get_ll_loss
 
 
 class MemReplayLoss():
-    def __init__(self, beta=[1, 1, 1, 100], writer=None, viz_start=float('inf'), viz_freq=200, counter=None, args=None):
+    def __init__(self, beta=[1, 1, 1, 1], writer=None, viz_start=float('inf'), viz_freq=200, counter=None, args=None):
         super().__init__()
         self.writer, self.beta, self.counter = writer, beta, counter
         self.viz_start, self.viz_freq = viz_start, viz_freq
@@ -39,7 +39,7 @@ class MemReplayLoss():
         else:
             self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
             self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.ll_loss = get_ll_loss(args, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
+        self.ll_loss = get_ll_loss(args, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter, lamb=args.ll_strength)
         self.args = args
 
     def __call__(self, net, img, aux, env):
@@ -92,11 +92,11 @@ class MemReplayLoss():
         # forgetting prevention
         if self.ll_loss is not None:
             if self.args.ll_method.lower() in ['mas', 'ewc']:
-                ll_loss = self.beta[3] * self.ll_loss(net, gd)
-                loss += ll_loss
+                loss += self.ll_loss(model=net, gd=gd)
             elif self.args.ll_method.lower() == 'rkd':
-                ll_loss = self.beta[3] * self.ll_loss(net, gd, img)
-                loss += ll_loss
+                loss += self.ll_loss(model=net, gd=gd, img=img)
+            else:
+                raise ValueError(f'Unrecognized lifelong loss: {self.ll_loss}')
 
         if self.writer is not None:
             n_iter = self.counter.steps if self.counter is not None else 0
@@ -105,8 +105,6 @@ class MemReplayLoss():
                 self.writer.add_scalars('Loss', {'cornerness': cornerness,
                                                  'desc': desc_match,
                                                  'all': loss}, n_iter)
-            if self.ll_loss is not None:
-                self.writer.add_scalars('Loss', {self.args.ll_method.lower(): ll_loss}, n_iter)
             self.writer.add_histogram('Misc/RelN', neg_rel, n_iter)
             self.writer.add_histogram('Misc/RelP', pos_rel, n_iter)
             self.writer.add_scalars('Misc/MemoryUsage', {'len': len(self.memory)}, n_iter)

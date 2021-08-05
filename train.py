@@ -64,7 +64,7 @@ def train(model, loader, optimizer, counter, args, writer=None, scheduler=None):
             # in case loss is manually set to 0 to skip batches
             if loss.requires_grad and not loss.isnan():
                 loss.backward()
-                optimizer.step()
+                optimizer.step(closure=criterion.ll_loss)
                 optimizer.zero_grad()
                 if scheduler is not None:
                     scheduler.step()
@@ -158,6 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--ll-method", type=str, default=None, help="Lifelong learning method")
     parser.add_argument("--ll-weights-load", type=str, nargs='+', help="Load paths for regularization weights")
     parser.add_argument("--ll-weights-save", type=str, help="Save path for regularization weights")
+    parser.add_argument("--ll-strength", type=float, default=1, help="Weights of lifelong losses")
     parser.add_argument("--gd-only", action='store_true', help="Avoid training local feature")
     parser.add_argument("--gd-dim", type=int, default=1024, help="global descriptor dimension")
     parser.add_argument('--scale', type=float, default=0.5, help='image resize')
