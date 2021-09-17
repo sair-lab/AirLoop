@@ -28,8 +28,13 @@ def save_model(model, path):
     print('Saved model: %s' % save_path)
 
 
-def load_model(model, path, device='cuda'):
-    model.load_state_dict(torch.load(path, map_location=device))
+def load_model(model, path, device='cuda', strict=False):
+    missing_keys, unexpected_keys = model.load_state_dict(torch.load(path, map_location=device), strict=strict)
+    if not strict:
+        if len(missing_keys) > 0:
+            print(f'Warning: Missing key(s): {missing_keys}')
+        if len(unexpected_keys) > 0:
+            print(f'Warning: Unexpected key(s): {unexpected_keys}')
     print('Loaded model: %s' % path)
     return model
 
@@ -66,33 +71,21 @@ class ProgressBarDescription():
 
 class Timer:
     def __init__(self):
+        self.hist = []
+        self.start_time = None
+        self.n_iter = 0
+
+    def __enter__(self):
         torch.cuda.synchronize()
         self.start_time = time.time()
 
-    def tic(self):
-        self.start()
-
-    def show(self, prefix="", output=True):
+    def __exit__(self, exc_type, exc_value, exc_trace):
         torch.cuda.synchronize()
-        duration = time.time()-self.start_time
-        if output:
-            print(prefix+"%fs" % duration)
-        return duration
+        self.hist.append(time.time() - self.start_time)
+        self.start_time = None
 
-    def toc(self, prefix=""):
-        self.end()
-        print(prefix+"%fs = %fHz" % (self.duration, 1/self.duration))
-        return self.duration
-
-    def start(self):
-        torch.cuda.synchronize()
-        self.start_time = time.time()
-
-    def end(self):
-        torch.cuda.synchronize()
-        self.duration = time.time()-self.start_time
-        self.start()
-        return self.duration
+    def get_ave(self):
+        return np.average(self.hist)
 
 
 def count_parameters(model):

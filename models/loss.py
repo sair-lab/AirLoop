@@ -23,13 +23,13 @@ class MemReplayLoss():
         self.viz = Visualizer() if self.writer is None else Visualizer('tensorboard', writer=self.writer)
         self.projector = Projector()
         self.grid_sample = GridSample()
-        self.augment = AirAugment(scale=args.scale)
+        self.augment = None
         if args.dataset == 'tartanair':
-            self.memory = SIoUMemory(capacity=1000, n_probe=1200, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
+            self.memory = SIoUMemory(capacity=args.mem_size, n_probe=1200, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
         elif args.dataset == 'nordland':
-            self.memory = OffsetMemory(capacity=1000, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
+            self.memory = OffsetMemory(capacity=args.mem_size, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
         elif args.dataset == 'robotcar':
-            self.memory = LocationMemory(capacity=1000, dist_tol=20, head_tol=15, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
+            self.memory = LocationMemory(capacity=args.mem_size, dist_tol=20, head_tol=15, swap_dir='.cache/memory', out_device='cpu' if self.augment is not None else args.device)
         if args.mem_load is not None:
             self.memory.load(args.mem_load)
         self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
@@ -41,7 +41,7 @@ class MemReplayLoss():
         else:
             self.score_corner = ScoreLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
             self.desc_match = DiscriptorMatchLoss(writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
-        self.ll_loss = get_ll_loss(args, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter, lamb=args.ll_strength)
+        self.ll_loss = get_ll_loss(args, writer=writer, viz=self.viz, viz_start=viz_start, viz_freq=viz_freq, counter=self.counter)
         self.args = args
 
     def __call__(self, net, img, aux, env):
@@ -227,7 +227,7 @@ class ScoreLoss(nn.Module):
         return (target > 0).to(target)
 
 
-class GlobalDescMatchLoss(nn.Module):
+class GlobalDescMatchLoss():
     eps = 1e-2
     thr = 0.3
 
@@ -236,7 +236,7 @@ class GlobalDescMatchLoss(nn.Module):
         super().__init__()
         self.writer = writer
         self.projector = Projector()
-        self.cosine = PairwiseCosine(inter_batch=True)
+        self.cosine = PairwiseCosine()
         self.counter = counter
         self.viz, self.viz_start, self.viz_freq = viz, viz_start, viz_freq * 10
         self.debug = debug
@@ -244,7 +244,7 @@ class GlobalDescMatchLoss(nn.Module):
         self.imgs_hist, self.depth_map, self.pose, self.K = [None] * 4
         self.n_triplet, self.n_pair = n_triplet, n_pair
 
-    def forward(self, gd):
+    def __call__(self, gd):
         gd, gd_locs = gd
 
         gd_a, gd_p, gd_n = gd.split([self.n_triplet, self.n_triplet * self.n_pair, self.n_triplet * self.n_pair])

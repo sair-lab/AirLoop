@@ -39,7 +39,7 @@ def get_datasets(args):
 
     seq_merge, env_merge = 'cat', 'cat'
     if 'joint' in args.task:
-        seq_merge, env_merge = 'rand_pick', 'rand_pick'
+        seq_merge, env_merge = 'cat', 'rand_pick'
 
     data.include_exclude(args.include, args.exclude)
     sampler = DefaultSampler(data, args.batch_size, seq_merge=seq_merge, env_merge=env_merge, overlap=False)

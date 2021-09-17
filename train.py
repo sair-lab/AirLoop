@@ -45,7 +45,7 @@ def evaluate(net, loader, counter, args, writer=None):
         evaluator.report()
 
 
-def train(model, loader, optimizer, counter, args, writer=None, scheduler=None):
+def train(model, loader, optimizer, counter, args, writer=None):
     model.train()
 
     if 'train' in args.task:
@@ -66,8 +66,6 @@ def train(model, loader, optimizer, counter, args, writer=None, scheduler=None):
                 loss.backward()
                 optimizer.step(closure=criterion.ll_loss)
                 optimizer.zero_grad()
-                if scheduler is not None:
-                    scheduler.step()
 
             # save model on env change for env-incremental tasks
             if 'env' in args.task and last_env != env_seq[0][0]:
@@ -75,7 +73,8 @@ def train(model, loader, optimizer, counter, args, writer=None, scheduler=None):
                     save_model(model, '%s.%s' % (args.save, last_env))
                 last_env = env_seq[0][0]
             
-            if counter.steps % args.save_freq == 0:
+            if (args.save_freq is not None and counter.steps % args.save_freq == 0) \
+                    or (args.save_steps is not None and counter.steps in args.save_steps):
                 save_model(model, '%s.step%d' % (args.save, counter.steps))
 
             pbd.update(loss)
@@ -130,9 +129,8 @@ def main(args):
 
     if 'train' in args.task:
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.w_decay)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, 1000, 0.75)
         # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.w_decay)
-        train(model, loader, optimizer, step_counter, args, writer, scheduler)
+        train(model, loader, optimizer, step_counter, args, writer)
     if 'eval' in args.task:
         evaluate(model, loader, step_counter, args, writer)
 
@@ -153,18 +151,20 @@ if __name__ == "__main__":
     parser.add_argument("--load", type=str, default=None, help="load pretrained model")
     parser.add_argument("--mem-load", type=str, default=None, help="load saved memory")
     parser.add_argument("--save", type=str, default=None, help="model file to save")
-    parser.add_argument("--save-freq", type=int, default=33558, help="model saving frequency")
+    parser.add_argument("--save-freq", type=int, help="model saving frequency")
+    parser.add_argument("--save-steps", type=int, nargs="+", help="model saving steps")
+    parser.add_argument("--mem-size", type=int, default=1000, help="memory size")
     parser.add_argument("--mem-save", type=str, default=None, help="memory save path")
-    parser.add_argument("--ll-method", type=str, default=None, help="Lifelong learning method")
-    parser.add_argument("--ll-weights-load", type=str, nargs='+', help="Load paths for regularization weights")
-    parser.add_argument("--ll-weights-save", type=str, help="Save path for regularization weights")
-    parser.add_argument("--ll-strength", type=float, default=1, help="Weights of lifelong losses")
+    parser.add_argument("--ll-method", type=str, nargs='+', help="Lifelong learning method")
+    parser.add_argument("--ll-weight-dir", type=str, default=None, help="Load directory for regularization weights")
+    parser.add_argument("--ll-weight-load", type=str, nargs='+', help="Environment name for regularization weights")
+    parser.add_argument("--ll-strength", type=float, nargs='+', default=1, help="Weights of lifelong losses")
     parser.add_argument("--gd-only", action='store_true', help="Avoid training local feature")
     parser.add_argument("--gd-dim", type=int, default=1024, help="global descriptor dimension")
     parser.add_argument('--scale', type=float, default=0.5, help='image resize')
     parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
     parser.add_argument("--feat-num", type=int, default=500, help="feature number")
-    parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
+    parser.add_argument("--lr", type=float, default=2e-3, help="learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="learning rate")
     parser.add_argument("--factor", type=float, default=0.1, help="factor of lr")
     parser.add_argument("--momentum", type=float, default=0.9, help="momentum of optim")
@@ -181,6 +181,8 @@ if __name__ == "__main__":
     parser.add_argument("--pretrain-percentage", type=float, default=0.0, help='Percentage of sequences for eval')
     parser.add_argument("--eval-percentage", type=float, default=0.2, help='Percentage of sequences for eval')
     parser.add_argument("--eval-save", type=str, help='Evaluation save path')
+    parser.add_argument("--eval-desc-save", type=str, help='Global descriptor save path')
+    parser.add_argument("--eval-gt-save", type=str, help='Evaluation groundtruth save path')
     parserd_args = parser.parse_args(); print(parserd_args)
 
     main(parserd_args)
