@@ -2,8 +2,10 @@
 
 import copy
 import os
+from pathlib import Path
 from typing import Any, List, Tuple
 
+import numpy as np
 import torch
 import torch.autograd as ag
 import torch.nn as nn
@@ -25,9 +27,12 @@ class LifelongLoss():
 
         self._call_args, self._call_kwargs = None, None
 
-        if args.ll_weights_load is not None:
-            self.load(args.ll_weights_load, args.devices[0])
-        self.save_path = args.ll_weights_save
+        if args.ll_weight_dir is not None:
+            self.weight_dir = Path(args.ll_weight_dir)
+            self.load(args.ll_weight_load, args.devices[0])
+        else:
+            self.weight_dir = None
+        self.args = args
 
     def init_loss(self, model: nn.Module) -> None:
         '''Called once upon first `__call__`.'''
@@ -35,8 +40,9 @@ class LifelongLoss():
     def calc_loss(self, *args, **kwargs) -> torch.Tensor:
         '''Called with arguments from `__call__`.'''
 
-    def restore_states(self, state: List) -> None:
+    def restore_states(self, state: List) -> List[int]:
         '''Called with loaded states.'''
+        return list(range(len(state)))
 
     def get_states(self) -> Any:
         '''Called when saving.'''
@@ -75,16 +81,18 @@ class LifelongLoss():
         else:
             return 0
 
-    def load(self, paths, device):
-        paths = [paths] if isinstance(paths, str) else paths
-        self.restore_states([torch.load(path, map_location=device) for path in paths])
-        print(f'Loaded {self.name} weights: {os.pathsep.join(paths)}')
-
-    def save(self, path=None, task=None, overwrite=True):
-        path = self.save_path if path is None else path
-        if path is None:
+    def load(self, tasks, device):
+        if self.weight_dir is None or tasks is None:
             return
-        path = path if task is None else f'{path}.{task}'
+        tasks = [tasks] if isinstance(tasks, str) else tasks
+        paths = [str(self.weight_dir / f'{self.name.lower()}.{task}') for task in tasks]
+        loaded_idx = self.restore_states([torch.load(path, map_location=device) for path in paths])
+        print(f'Loaded {self.name} weights: {os.pathsep.join(np.take(paths, loaded_idx))}')
+
+    def save(self, task=None, overwrite=True):
+        if self.weight_dir is None:
+            return
+        path = str(self.weight_dir / f'{self.name.lower()}' if task is None else self.weight_dir / f'{self.name.lower()}.{task}')
         save_path = rectify_savepath(path, overwrite=overwrite)
         torch.save(self.get_states(), save_path)
         print(f'Saved {self.name} weights: {save_path}')
@@ -138,31 +146,54 @@ class L2RegLoss(LifelongLoss):
 
         return loss
 
-    def restore_states(self, state: List) -> None:
+    def restore_states(self, state: List) -> List[int]:
         self.old_imp = [torch.stack(ws).mean(dim=0) for ws in zip(*state)]
+        return list(range(len(state)))
 
     def get_states(self) -> Any:
         return self.cur_imp
 
 class MASLoss(L2RegLoss):
-    def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100):
-        super().__init__('MAS', args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb)
+    def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100, relational=True):
+        self.relational = relational
+        name = 'RMAS' if relational else 'MAS'
+        super().__init__(name, args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb)
         self.cosine = PairwiseCosine()
 
     def get_importance(self, model, gd):
         (gd, _) = gd
-        pcos = self.cosine(gd[None], gd[None])[0]
-        norm = pcos.square().sum().sqrt()
+        if self.relational:
+            pcos = self.cosine(gd[None], gd[None])[0]
+            norm = pcos.square().sum().sqrt()
+        else:
+            norm = gd.square().sum(dim=1).sqrt().mean()
 
         gs = ag.grad(norm, model.parameters(), retain_graph=True)
         return [g.abs() for g in gs], len(gd)
 
 
 class EWCLoss(L2RegLoss):
-    def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100):
-        super().__init__('EWC', args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb)
+    def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100, ce=False):
+        self.ce = ce
+        post_backward = not ce
+        super().__init__('CEWC' if ce else 'EWC', args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb, post_backward=post_backward)
+        self.cosine = PairwiseCosine()
 
-    def get_importance(self, model, gd):
+    def get_importance(self, *args, **kwargs):
+        if self.ce:
+            return self.get_importance_ce(*args, **kwargs)
+        else:
+            return self.get_importance_grad(*args, **kwargs)
+
+    def get_importance_grad(self, model, gd):
+        (gd, _) = gd
+        b = len(gd)
+        assert b % 3 == 0
+        gs = [p.grad for p in self.cur_param]
+
+        return [g ** 2 for g in gs], b // 3 * 2
+
+    def get_importance_ce(self, model, gd):
         (gd, _) = gd
         b = len(gd)
         assert b % 3 == 0
@@ -205,10 +236,14 @@ class SILoss(L2RegLoss):
         return [w / (omg ** 2 + self.eps) for w, omg in zip(self.w, omega)], len(gd)
 
 
-class RKDLoss(LifelongLoss):
-    def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100):
+class KDLoss(LifelongLoss):
+    def __init__(self, args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None, lamb=100, relational=True, last_only=True):
         self._model_t_states: List[nn.Module.T_destination] = []
-        super().__init__('RKD', args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb, post_backward=False)
+        self.last_only = last_only
+        self.relational = relational
+        name = 'RKD' if relational else 'KD'
+        name = ('' if last_only else 'C') + name
+        super().__init__(name, args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb, post_backward=False)
         self.cosine = PairwiseCosine()
         self.model_s: nn.Module = None
         self.model_t: List[nn.Module] = []
@@ -230,16 +265,44 @@ class RKDLoss(LifelongLoss):
             with torch.no_grad():
                 gd_t = model_t(img=img)
 
-            pcos_s = self.cosine(gd_s[None], gd_s[None])[0]
-            pcos_t = self.cosine(gd_t[None], gd_t[None])[0]
+            if self.relational:
+                response_s = self.cosine(gd_s[None], gd_s[None])[0]
+                response_t = self.cosine(gd_t[None], gd_t[None])[0]
+            else:
+                response_s = gd_s
+                response_t = gd_t
 
-            loss += F.smooth_l1_loss(pcos_s, pcos_t) / len(self.model_t)
+            loss += F.smooth_l1_loss(response_s, response_t) / len(self.model_t)
 
         return loss
 
-    def restore_states(self, state: List) -> None:
+    def restore_states(self, state: List) -> List[int]:
         self._model_t_states = state.copy()
+        if self.last_only:
+            self._model_t_states = self._model_t_states[-1:]
+            return [len(state) - 1]
+        else:
+            return list(range(len(state)))
 
     def get_states(self) -> nn.Module.T_destination:
         module = self.model_s.module if isinstance(self.model_s, nn.DataParallel) else self.model_s
         return module.state_dict()
+
+
+class CompoundLifelongLoss():
+    def __init__(self, *losses: LifelongLoss):
+        self.losses = losses
+
+    def __call__(self, *args, model: nn.Module = None, **kwargs):
+        return sum(loss(*args, model, **kwargs) for loss in self.losses)
+
+    def load(self, tasks, device):
+        for loss in self.losses:
+            loss.load(tasks, device)
+
+    def save(self, task=None, overwrite=True):
+        for loss in self.losses:
+            loss.save(task, overwrite)
+
+    def __iter__(self):
+        return iter(self.losses)

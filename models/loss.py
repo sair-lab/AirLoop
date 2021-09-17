@@ -93,12 +93,14 @@ class MemReplayLoss():
 
         # forgetting prevention
         if self.ll_loss is not None:
-            if self.args.ll_method.lower() in ['mas', 'ewc', 'si']:
-                loss += self.ll_loss(model=net, gd=gd)
-            elif self.args.ll_method.lower() == 'rkd':
-                loss += self.ll_loss(model=net, gd=gd, img=img)
-            else:
-                raise ValueError(f'Unrecognized lifelong loss: {self.ll_loss}')
+            for ll_loss in self.ll_loss:
+                loss_name = ll_loss.name.lower()
+                if loss_name in ['mas', 'rmas', 'ewc', 'cewc', 'si']:
+                    loss += ll_loss(model=net, gd=gd)
+                elif loss_name in ['kd', 'rkd', 'crkd']:
+                    loss += ll_loss(model=net, gd=gd, img=img)
+                else:
+                    raise ValueError(f'Unrecognized lifelong loss: {ll_loss}')
 
         if self.writer is not None:
             n_iter = self.counter.steps if self.counter is not None else 0
