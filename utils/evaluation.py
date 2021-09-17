@@ -1,3 +1,6 @@
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
+
 import kornia.geometry.conversions as C
 import numpy as np
 import os
@@ -9,7 +12,7 @@ from prettytable import PrettyTable, MARKDOWN
 
 from .geometry import Projector, gen_probe, feature_pt_ncovis
 from .misc import GlobalStepCounter
-from .utils import ConsecutiveMatch, GridSample
+from .utils import ConsecutiveMatch, GridSample, PairwiseCosine
 
 
 class MatchEvaluator():
@@ -163,125 +166,181 @@ def reproj_error(pts_src, K_src, pose_src, depth_src, pts_dst, K_dst, pose_dst, 
     return torch.hypot(diff[..., 0], diff[..., 1])
 
 
+@dataclass
+class _EnvData():
+    env: str
+    gds: List[torch.Tensor] = field(default_factory=list)
+    n_observed: int = 0
+    seq_lims: Dict[str, List[int]] = field(default_factory=dict)
+    aux: List[Any] = field(default_factory=list)
+
+
+def chunk_index_itr(total: int, chunk_size: int):
+    for chunk_start in range(0, total, chunk_size):
+        chunk_end = min(total, chunk_start + chunk_size)
+        yield chunk_start, chunk_end
+
+
 class RecognitionEvaluator():
     def __init__(self, loader, n_feature=250, D_frame=256, ks=[2, 5, 10], viz=None, writer=None, counter=None, args=None):
         self.viz = viz
         self.probe_pts, self.gds, self.n_observed = None, None, 0
         self.adj_mat = None
         self.loader = loader
-        self.env_sizes = self.loader.dataset.summary().groupby('env')['size'].sum().reset_index()
         self.n_feature, self.D_frame = n_feature, D_frame
 
         self.grid_sample = GridSample()
         self.projector = Projector()
         self.writer = writer
         self.counter = counter if counter is not None else GlobalStepCounter()
-        self.cur_env = None
-        self.env_stats = {}
+        self.env_data: Dict[str, _EnvData] = {}
         self.ks = ks
         self.args = args
+        self.chunk_size = 128
 
     @torch.no_grad()
     def observe(self, descriptors, points, scores, gd, score_map, aux, imgs, env_seq):
-        depth_map, poses, Ks = aux
+        B = len(imgs)
         env = env_seq[0][0]
-        if self.cur_env != env:
-            last_env, self.cur_env = self.cur_env, env
-            if last_env is not None:
-                self.env_stats[last_env] = (self.probe_pts, self.gds, self.adj_mat, self.n_observed)
+        env_data = self.env_data.setdefault(env, _EnvData(env=env))
 
-            # restore old context / create new
-            if env in self.env_stats:
-                self.probe_pts, self.gds, self.adj_mat, self.n_observed = self.env_stats[env]
-            else:
-                n_frames = int(self.env_sizes[self.env_sizes['env'] == env]['size'])
-                self.probe_pts = torch.zeros(n_frames, 1200, 3).fill_(np.nan).to(points)
-                self.gds = torch.zeros(n_frames, self.D_frame).fill_(np.nan).to(gd)
-                self.adj_mat = torch.zeros(n_frames, n_frames).fill_(np.nan).to(points)
-                self.n_observed = 0
+        env_data.gds.append(gd)
 
-        # record history
-        B, _, H, W = depth_map.shape
-        points = gen_probe(depth_map)
-        new_n_observed = self.n_observed + B
-        self.probe_pts[self.n_observed:new_n_observed] = self.projector.pix2world(points, depth_map, poses, Ks)
-        self.gds[self.n_observed:new_n_observed] = gd
-        self.n_observed = new_n_observed
+        if self.args.dataset == 'tartanair':
+            seq = env_seq[1][0][0] + '_' + env_seq[1][1][0]
+        elif self.args.dataset in ['nordland', 'robotcar']:
+            seq = env_seq[1][0]
+        # record/update sequence start/end
+        seq_lims = env_data.seq_lims.setdefault(seq, [env_data.n_observed, env_data.n_observed + B])
+        seq_lims[1] = env_data.n_observed + B
 
-        # fill adjacency matrix
+        if self.args.eval_gt_save is not None:
+            if self.args.dataset == 'tartanair':
+                depth_map, poses, Ks = aux
+                probe_pts = self.projector.pix2world(gen_probe(depth_map), depth_map, poses, Ks)
+                env_data.aux.extend(probe_pts)
+            elif self.args.dataset == 'nordland':
+                env_data.aux.extend(aux)
+            elif self.args.dataset == 'robotcar':
+                env_data.aux.extend(zip(*aux))
+
+        env_data.n_observed += B
 
     def report(self):
-        self.env_stats[self.cur_env] = (self.probe_pts, self.gds, self.adj_mat, self.n_observed)
-
         if self.args.eval_save is not None:
-            from utils import PairwiseCosine
-            cosine = PairwiseCosine(inter_batch=True)
-            np.savez_compressed(self.args.eval_save, **{env: cosine(gd[:n_observed, None], gd[:n_observed, None])[:, :, 0, 0].cpu().numpy() for env, (_, gd, _, n_observed) in self.env_stats.items()})
-            # np.savez_compressed('workspace/air-slam/.cache/gd_mat_fullll_gem_abandonedfactory_abandonedfactory-night', **{env: cosine(gd[:n_observed, None], gd[:n_observed, None])[:, :, 0, 0].cpu().numpy() for env, (_, gd, _, n_observed) in self.env_stats.items()})
+            cosine = PairwiseCosine()
+            save_dict = {}
+            for env, env_data in self.env_data.items():
+                gds = torch.cat(env_data.gds)
+                # reduce memory consumption
+                cossim = [[cosine(gds[None, st0:nd0], gds[None, st1:nd1])[0].cpu().numpy()
+                           for st1, nd1 in chunk_index_itr(len(gds), self.chunk_size)]
+                          for st0, nd0 in chunk_index_itr(len(gds), self.chunk_size)]
+                save_dict[env] = np.block(cossim)
+            np.savez_compressed(self.args.eval_save, **save_dict)
+            print(f'Saved result: {self.args.eval_save}')
 
-        result = PrettyTable(['Env Name',
-                            'Recall @(%s)' % self._fmt_list(self.ks, '%d', '/'),
-                            'Ave Rank top-(%s)' % self._fmt_list(self.ks, '%d', '/')])
-        # result.float_format['Ave Prec'] = '.2'
-        result.align['Env Name'] = 'r'
+        if self.args.eval_desc_save is not None:
+            save_dict = {env: torch.cat(env_data.gds).cpu().numpy() for env, env_data in self.env_data.items()}
+            np.savez_compressed(self.args.eval_desc_save, **save_dict)
+            print(f'Saved global descriptors: {self.args.eval_desc_save}')
 
-        self._build_adjacency(save_path='workspace/air-slam/.cache/adj_mat.npz')
+        if self.args.eval_gt_save is not None:
+            print('Building groundtruth adjcency matrix')
+            env_len, adj_mat = {}, {}
+            for env, env_data in self.env_data.items():
+                lims = np.array(list(env_data.seq_lims.values()))
+                env_len[env] = (lims[:, 1] - lims[:, 0]).sum()
+                adj_mat[env] = np.full((env_len[env], env_len[env]), np.nan, dtype=np.float32)
 
-        recall, ave_rank, size = {}, {}, []
+            env_progress = {env: 0 for env in self.env_data}
+            for imgs, aux_d, env_seq in tqdm.tqdm(self.loader):
+                B, env = len(imgs), env_seq[0][0]
+                n_total = env_len[env]
+                i = env_progress[env]
+                for st, nd in chunk_index_itr(n_total, self.chunk_size):
+                    adj_mat[env][st:nd, i:i+B] = self._calc_adjacency(self.env_data[env].aux[st:nd], aux_d)
+                env_progress[env] += B
 
-        for env, (_, gd, adj_mat, n_observed) in self.env_stats.items():
-            pred_rank = torch.cdist(gd, gd).sort(dim=1, descending=False).indices
-            true_rank = adj_mat.sort(dim=1, descending=True).indices
-            recall[env] = [(pred_rank[:, :k] == true_rank[:, :1]).to(torch.float).sum(dim=1).mean() for k in self.ks]
-            ave_rank[env] = [true_rank.gather(1, pred_rank[:, :k]).to(torch.float).mean() for k in self.ks]
-            size.append(n_observed)
+            os.makedirs(os.path.dirname(self.args.eval_gt_save), exist_ok=True)
+            np.savez_compressed(self.args.eval_gt_save, **adj_mat)
+            print(f'Saved ground truth: {self.args.eval_gt_save}')
 
-        result.add_row(['All', self._fmt_list(np.average(np.array([recall[e] for e in self.env_stats]), axis=0, weights=size), '%.2f', '/')])
-        result.add_rows([[e, self._fmt_list(recall[e], '%.2f', '/'), self._fmt_list(ave_rank[e], '%.2f', '/')] for e in self.env_stats])
+    def _calc_adjacency(self, aux, aux_d):
+        '''Calculate adjacency based on metadata'''
+        if self.args.dataset == 'tartanair':
+            probe_pts, (depths, poses, K) = aux, aux_d
+            probe_pts = torch.stack(probe_pts)
+            depths, poses, K = depths.to(probe_pts), poses.to(probe_pts), K.to(probe_pts)
 
-        n_iter = self.counter.steps
-        if self.writer is not None:
-            # self.writer.add_scalars('Eval/Recog/Recall', {'@ %d' % b: v for b, v in recall.items()}, n_iter)
-            # self.writer.add_scalars('Eval/Recog/AveRank', {'@ %d' % b: v for b, v in all_mean.items()}, n_iter)
-            # TensorBoard supports markdown table although column alignment is broken
-            result.set_style(MARKDOWN)
-            self.writer.add_text('Eval/Match/PerSeq', result.get_string(), n_iter)
-        else:
-            print('Evaluation: step %d' % n_iter)
-            print(result.get_string(sortby='n-back'))
+            return feature_pt_ncovis(probe_pts, torch.zeros(len(K)),
+                depths, poses, K, self.projector, self.grid_sample).cpu().numpy()
+        elif self.args.dataset == 'nordland':
+            offset, offset_d = aux, aux_d
+            offset, offset_d = torch.stack(offset), offset_d
 
+            return (1 / (np.abs(offset[:, None] - offset_d[None, :]) + 1)).cpu().numpy()
+        elif self.args.dataset == 'robotcar':
+            HEADING_TOL = 15
+            (location, heading), (location_d, heading_d) = list(zip(*aux)), aux_d
+            location, heading = torch.stack(location), torch.stack(heading)
 
-    def _build_adjacency(self, load_path=None, save_path=None, chunk_size=128):
-        if load_path is not None:
-            try:
-                adj_dict = np.load(load_path)
-                for env, adj in adj_dict:
-                    adj_mat, n_observed = self.env_stats[env][2:]
-                    adj_mat[:n_observed, :n_observed] = adj
-            except:
-                pass
-            else:
-                return
+            dist = torch.cdist(location, location_d)
+            view_diff = (heading[:, None] - heading_d[None, :]).abs()
+            return ((view_diff < HEADING_TOL).to(torch.float) / (dist + 1)).cpu().numpy()
 
-        n_frame = {env: 0 for env in self.env_stats}
-        for images, depths, poses, K, env_seq in tqdm.tqdm(self.loader):
-            B, env = len(images), env_seq[0][0]
-            pos0, _, adj_mat, _ = self.env_stats[env]
-            depths, poses, K = depths.to(pos0), poses.to(pos0), K.to(pos0)
-            n_total = len(pos0)
-            i = n_frame[env]
-            for chunk_start in range(0, n_total, chunk_size):
-                chunk_end = min(n_total, chunk_start + chunk_size)
-                adj_mat[chunk_start:chunk_end, i:i+B] = feature_pt_ncovis(pos0[chunk_start:chunk_end], torch.zeros(B), depths, poses, K, self.projector, self.grid_sample)
-            n_frame[env] = n_frame[env] + B
-
-        if save_path is not None:
-            adj_dict = {env: stats[2][:stats[-1], :stats[-1]].cpu().numpy() for env, stats in self.env_stats.items()}
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            np.savez_compressed(save_path, **adj_dict)
-        
-            
     @staticmethod
     def _fmt_list(elems, fmt, delim=', '):
         return delim.join([fmt % e for e in elems])
+
+    def get_pr_at_k(self, adj_mat, adj_mat_gt, similarity=True, k=np.arange(100) + 1):
+        # relevant = lambda sim: sim == sim.max(dim=1, keepdims=True).values
+        relevant = lambda sim: sim > 0.75
+        def relevant(sim):
+            out = torch.zeros_like(sim, dtype=torch.bool)
+            return out.scatter(1, sim.topk(5, dim=1, largest=True).indices, True)
+
+        pr = self._get_pr_single(adj_mat, adj_mat_gt, k, relevant, similarity)
+
+    def _get_pr_single(self, pred_conf, gt_conf, at_k, relevant, similarity):
+        admissible, inadmissible = (1, -1) if similarity else (0, 1e8)
+        pr = {}
+
+        for env in split_dict:
+            adj_gt, adj_pred = gt_conf[env][::1], pred_conf[env][::1]
+            # adj_gt = recog_eval.paint_block_diag(adj_gt, split_dict[env], inadmissible)
+            # adj_pred = recog_eval.paint_block_diag(adj_pred, split_dict[env], inadmissible)
+            _gt = recog_eval.paint_band_diag(adj_gt, split_dict[env], 0, 0, inadmissible)#[:100, :100]
+            _pred = recog_eval.paint_band_diag(adj_pred, split_dict[env], 0, 0, inadmissible)#[:100, :100]
+            pr[env] = precision_recall(torch.from_numpy(_gt).to('cuda'), torch.from_numpy(_pred).to('cuda'), at_k, relevant, similarity)
+            torch.cuda.empty_cache()
+        return pr
+
+
+def mAP(pr_dict, weight_dict=None):
+    AP = {}
+    for env, pr in pr_dict.items():
+        pr = np.array(pr)
+        p, r = pr[np.isfinite(pr).all(axis=1)].T
+        AP[env] = np.abs(np.trapz(r, p))
+    if weight_dict is not None:
+        return weighted(AP, weight_dict)
+    return AP
+
+
+def weighted(v_dict, w_dict):
+    assert v_dict.keys() == w_dict.keys()
+    return sum([v_dict[env] * w_dict[env] for env in w_dict]) / sum(w_dict.values())
+
+
+@torch.no_grad()
+def precision_recall(gt_conf, pred_conf, ks, relevant, similarity=False):
+    pred_rank = pred_conf.sort(dim=1, descending=similarity).indices
+    is_relevant = relevant(gt_conf)
+    def _pr(k):
+        _relevant = is_relevant.gather(1, pred_rank[:, :k]).to(torch.float32)
+        _n_rec_rel = _relevant.sum(dim=1)
+        return (_n_rec_rel / k).mean().item(), (_n_rec_rel / is_relevant.sum(dim=1).clamp(min=1e-6)).mean().item()
+    
+    return np.array([_pr(k) for k in ks])
 
