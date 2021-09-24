@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models import FeatureNet
 from datasets import get_datasets
 from models.loss import MemReplayLoss
-from utils.evaluation import MatchEvaluator, RecognitionEvaluator
+from utils.evaluation import RecognitionEvaluator
 from utils.misc import save_model, load_model, GlobalStepCounter, ProgressBarDescription
 
 
@@ -22,27 +22,16 @@ from utils.misc import save_model, load_model, GlobalStepCounter, ProgressBarDes
 def evaluate(net, loader, counter, args, writer=None):
     net.eval()
 
-    evaluators = []
-
-    if 'match' in args.task:
-        evaluators.append(MatchEvaluator(back=args.eval_back, viz=None, top=args.eval_topk, writer=writer, counter=counter, args=args))
-    if 'recog' in args.task:
-        evaluators.append(RecognitionEvaluator(loader=loader, n_feature=args.feat_dim, D_frame=args.gd_dim, args=args))
+    evaluator = RecognitionEvaluator(loader=loader, n_feature=args.feat_dim, D_frame=args.gd_dim, args=args)
 
     for images, aux, env_seq in tqdm.tqdm(loader):
         images = images.to(args.device)
 
-        if not args.gd_only:
-            descriptors, points, pointness, scores, gd = net(images)
-        else:
-            gd = net(images)
-            descriptors, points, pointness, scores = None, None, None, None
+        gd = net(images)
 
-        for evaluator in evaluators:
-            evaluator.observe(descriptors, points, scores, gd, pointness, aux, images, env_seq)
+        evaluator.observe(descriptors, points, scores, gd, pointness, aux, images, env_seq)
 
-    for evaluator in evaluators:
-        evaluator.report()
+    evaluator.report()
 
 
 def train(model, loader, optimizer, counter, args, writer=None):
@@ -102,12 +91,12 @@ def main(args):
     if args.deterministic >= 3:
         torch.set_deterministic(True)
 
-    loader, img_res = get_datasets(args)
+    loader, _ = get_datasets(args)
     if args.devices is None:
         args.devices = ['cuda:%d' % i for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else ['cpu']
     args.device = args.devices[0]
 
-    model = FeatureNet(img_res, args.feat_dim, args.feat_num, args.gd_dim, gd_only=args.gd_only).to(args.device)
+    model = FeatureNet(args.gd_dim).to(args.device)
     if args.load:
         load_model(model, args.load, device=args.device)
     if not args.no_parallel:
@@ -154,6 +143,7 @@ if __name__ == "__main__":
     parser.add_argument("--save-freq", type=int, help="model saving frequency")
     parser.add_argument("--save-steps", type=int, nargs="+", help="model saving steps")
     parser.add_argument("--mem-size", type=int, default=1000, help="memory size")
+    parser.add_argument("--mem-swap", type=str, default='./.cache/memory', help="memory swap directory")
     parser.add_argument("--mem-save", type=str, default=None, help="memory save path")
     parser.add_argument("--ll-method", type=str, nargs='+', help="Lifelong learning method")
     parser.add_argument("--ll-weight-dir", type=str, default=None, help="Load directory for regularization weights")
@@ -161,8 +151,6 @@ if __name__ == "__main__":
     parser.add_argument("--ll-strength", type=float, nargs='+', default=1, help="Weights of lifelong losses")
     parser.add_argument("--gd-dim", type=int, default=1024, help="global descriptor dimension")
     parser.add_argument('--scale', type=float, default=0.5, help='image resize')
-    parser.add_argument("--feat-dim", type=int, default=256, help="feature dimension")
-    parser.add_argument("--feat-num", type=int, default=500, help="feature number")
     parser.add_argument("--lr", type=float, default=2e-3, help="learning rate")
     parser.add_argument("--w-decay", type=float, default=0, help="weight decay of optim")
     parser.add_argument("--epoch", type=int, default=15, help="number of epoches")

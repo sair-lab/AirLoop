@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 
-import os
-import torch
 import numpy as np
-import torch.nn as nn
+import torch
+
 from utils.misc import rectify_savepath
-from utils import Projector, GridSample, feature_pt_ncovis
+from utils import feature_pt_ncovis
 
 
-class Memory(nn.Module):
+class Memory():
     MAX_CAP = 2000
     STATE_DICT = ['swap_dir', 'out_device', 'capacity', 'n_frame',
                   'n_frame_hist', 'property_spec', '_states', '_store', '_rel']
@@ -26,41 +25,6 @@ class Memory(nn.Module):
         self._rel = None
         self.cutoff = None
 
-    # exp_rand sample
-    # def sample_frames(self, n):
-    #     n_frame = len(self._store)
-    #     lamb = n_frame / 20
-    #     prob = torch.exp((torch.arange(n_frame, dtype=torch.float32) - n_frame) / lamb)
-    #     frame_idx = torch.multinomial(prob, n, replacement=(n_frame < n))
-    #     # frame_idx = torch.arange(n_frame - n, n_frame)
-    #     return [item.to(self.out_device) for item in self._store[frame_idx]]
-    ################################################################
-
-    # ################################################################ relevance sample
-    # def sample_frames(self, n, project):
-    #     fd, pd, pos = self._store[torch.arange(len(self._store))]
-    #     relevance, mem_pts_scr = project(pos.to(self.out_device))
-    #     relevance = relevance.T
-    #     mem_pts_scr = mem_pts_scr.transpose(0, 1)
-    #     # vis
-    #     # sample
-    #     cutoff = relevance.where(relevance > 0, torch.tensor(np.nan).to(relevance)).nanquantile(torch.tensor([0.1, 0.9]).to(relevance), dim=1, keepdim=True)
-    #     if cutoff.isnan().all():
-    #         return [None] * 7
-    #     pos_prob = (relevance >= cutoff[1].clamp(max=0.4)).to(torch.float)
-    #     neg_prob = (relevance <= cutoff[0]).to(torch.float)
-    #     pos_idx = torch.multinomial(pos_prob, n, replacement=True)
-    #     neg_idx = torch.multinomial(neg_prob, n, replacement=True)
-
-    #     mem_pts_scr_offset = pos_idx + torch.arange(len(relevance)).unsqueeze(1).to(pos_idx) * len(self._store)
-    #     return pd[pos_idx.cpu()].to(self.out_device), \
-    #         pd[neg_idx.cpu()].to(self.out_device), \
-    #         mem_pts_scr.reshape(-1, *mem_pts_scr.shape[2:])[mem_pts_scr_offset], \
-    #         relevance.reshape(-1, *relevance.shape[2:])[mem_pts_scr_offset], \
-    #         relevance.reshape(-1, *relevance.shape[2:])[neg_idx + torch.arange(len(relevance)).unsqueeze(1).to(neg_idx) * len(self._store)], \
-    #         pos_idx, neg_idx
-    # ################################################################
-    # augmented sample
     def sample_frames(self, n_anchor, n_recent=0, n_pair=1, n_try=10):
         n_frame = len(self._store)
         for _ in range(n_try):
@@ -69,7 +33,7 @@ class Memory(nn.Module):
                 torch.randint(n_frame - n_recent, (n_anchor - n_recent,)),
                 torch.arange(n_frame - n_recent, n_frame)])
             relevance = self._rel[ank_idx, :self.n_frame]
-            # sample
+            # sample based on calculated or predefined cutoff
             if self.cutoff is None:
                 cutoff = relevance.where(
                     relevance > 0, torch.tensor(np.nan).to(relevance)).nanquantile(
@@ -85,6 +49,7 @@ class Memory(nn.Module):
             if cutoff.isfinite().all() and (pos_prob > 0).any(1).all() and (neg_prob > 0).any(1).all():
                 break
         else:
+            # no suitable triplets
             return [[None] * 3] * 2 + [[None] * 2]
 
         pos_idx = torch.multinomial(pos_prob, n_pair, replacement=True)
@@ -97,7 +62,6 @@ class Memory(nn.Module):
         return (ank_idx, pos_idx, neg_idx), \
             (ank_batch, pos_batch, neg_batch), \
             (relevance.gather(1, pos_idx), relevance.gather(1, neg_idx))
-            ################################################################
 
     def store_fifo(self, **properties):
         frame_addr = torch.arange(len(list(properties.values())[0]))
@@ -116,12 +80,7 @@ class Memory(nn.Module):
             self._rel = torch.zeros(self.capacity, self.capacity, device=self.out_device).fill_(np.nan)
             self._states[name] = self._store, self._rel, self.n_frame_hist
         self.n_frame = len(self._store)
-        #     else:
-        #         torch.save(self._store, os.path.join(self.swap_dir, '%s.pth' % self._store.name))
-        # load_path = os.path.join(self.swap_dir, '%s.pth' % name)
-        # self._store = torch.load(load_path) if os.path.isfile(load_path) else \
-        #     KeyFrameStore(self.D_point, self.D_frame, self.n_fea, name).to(device)
-    
+
     def update_rel(self, frame_idx):
         frame_idx = frame_idx.to(self._rel.device)
         # (n_frame, B)
@@ -150,37 +109,37 @@ class Memory(nn.Module):
         return self._states.keys()
 
 
-class SIoUMemory(Memory):
+class TartanAirMemory(Memory):
+
     def __init__(self, capacity=Memory.MAX_CAP, n_probe=1200, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
-        SIoUM_SPEC = {
+        TARTANAIR_SPEC = {
             'pos': {'shape': (n_probe, 3), 'default': np.nan, 'device': out_device},
             'img': {'shape': (3,) + img_size, 'default': np.nan},
             'pose': {'shape': (3, 4), 'default': np.nan},
             'K': {'shape': (3, 3), 'default': np.nan},
             'depth_map': {'shape': (1,) + img_size, 'default': np.nan},
         }
-        super().__init__(SIoUM_SPEC, capacity, swap_dir, out_device)
+        super().__init__(TARTANAIR_SPEC, capacity, swap_dir, out_device)
         self.STATE_DICT.append('n_probe')
 
         self.n_probe = n_probe
-        self.projector = Projector()
-        self.grid_sample = GridSample()
 
     def get_rel(self, src_idx, dst_idx):
         src_pos = self._store[src_idx, ['pos']]['pos']
         dst_info = self._store[dst_idx, ['pos', 'pose', 'depth_map', 'K']]
         dst_pos, dst_depth_map, dst_pose, dst_K = dst_info['pos'], dst_info['depth_map'], dst_info['pose'], dst_info['K']
 
-        return feature_pt_ncovis(src_pos, dst_pos, dst_depth_map, dst_pose, dst_K, self.projector, self.grid_sample)
+        return feature_pt_ncovis(src_pos, dst_pos, dst_depth_map, dst_pose, dst_K)
 
 
-class OffsetMemory(Memory):
+class NordlandMemory(Memory):
+
     def __init__(self, window=5, capacity=Memory.MAX_CAP, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
-        OFFSETM_SPEC = {
+        NORDLAND_SPEC = {
             'img': {'shape': (3,) + img_size, 'default': np.nan},
             'offset': {'shape': (), 'dtype': torch.int, 'default': -1},
         }
-        super().__init__(OFFSETM_SPEC, capacity, swap_dir, out_device)
+        super().__init__(NORDLAND_SPEC, capacity, swap_dir, out_device)
         self.STATE_DICT.append('cutoff')
         self.cutoff = [1 / (window + 0.5), 1 / (window + 0.5)]
 
@@ -191,14 +150,15 @@ class OffsetMemory(Memory):
         return 1 / ((src_off[:, None] - dst_off[None, :]).abs() + 1)
 
 
-class LocationMemory(Memory):
+class RobotCarMemory(Memory):
+
     def __init__(self, dist_tol=20, head_tol=15, capacity=Memory.MAX_CAP, img_size=(240, 320), swap_dir='./memory', out_device='cuda'):
-        LOCATIONM_SPEC = {
+        ROBOTCAR_SPEC = {
             'img': {'shape': (3,) + img_size, 'default': np.nan},
             'location': {'shape': (2,), 'dtype': torch.float64, 'default': np.nan},
             'heading': {'shape': (), 'default': np.nan},
         }
-        super().__init__(LOCATIONM_SPEC, capacity, swap_dir, out_device)
+        super().__init__(ROBOTCAR_SPEC, capacity, swap_dir, out_device)
         self.STATE_DICT.extend(['cutoff', 'head_tol'])
         self.head_tol = head_tol
         self.cutoff = [1 / (dist_tol * 2 + 1), 1 / (dist_tol + 1)]

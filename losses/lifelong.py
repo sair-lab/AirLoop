@@ -161,7 +161,6 @@ class MASLoss(L2RegLoss):
         self.cosine = PairwiseCosine()
 
     def get_importance(self, model, gd):
-        (gd, _) = gd
         if self.relational:
             pcos = self.cosine(gd[None], gd[None])[0]
             norm = pcos.square().sum().sqrt()
@@ -186,7 +185,6 @@ class EWCLoss(L2RegLoss):
             return self.get_importance_grad(*args, **kwargs)
 
     def get_importance_grad(self, model, gd):
-        (gd, _) = gd
         b = len(gd)
         assert b % 3 == 0
         gs = [p.grad for p in self.cur_param]
@@ -194,7 +192,6 @@ class EWCLoss(L2RegLoss):
         return [g ** 2 for g in gs], b // 3 * 2
 
     def get_importance_ce(self, model, gd):
-        (gd, _) = gd
         b = len(gd)
         assert b % 3 == 0
 
@@ -223,7 +220,6 @@ class SILoss(L2RegLoss):
 
     @torch.no_grad()
     def get_importance(self, model, gd):
-        (gd, _) = gd
         gs = [p.grad for p in self.cur_param]
 
         # path integral
@@ -257,8 +253,7 @@ class KDLoss(LifelongLoss):
             self.model_t.append(model_t)
 
     def calc_loss(self, gd: torch.Tensor, img: torch.Tensor) -> torch.Tensor:
-        gd_s, _ = gd
-
+        gd_s = gd
         loss = 0
         # distill from each teacher
         for model_t in self.model_t:

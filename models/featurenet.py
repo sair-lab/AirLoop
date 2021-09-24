@@ -1,17 +1,5 @@
-#!/usr/bin/env python3
-
-from functools import partial
-
-import numpy as np
-
-import torch
 import torch.nn as nn
-from kornia.feature import nms
 from torchvision import models
-import torch.nn.functional as F
-import kornia.geometry.conversions as C
-
-from utils import GridSample
 
 
 class GeM(nn.Module):
@@ -25,27 +13,20 @@ class GeM(nn.Module):
 
     def forward(self, features):
         mean = (features ** self.p).mean(dim=1)
-        return self.whiten(mean.sign() * mean.abs() ** (1 / self.p)), None
+        return self.whiten(mean.sign() * mean.abs() ** (1 / self.p))
 
 
 class FeatureNet(nn.Module):
-    def __init__(self, res=(240, 320), feat_dim=256, feat_num=500, gd_dim=1024, sample_pass=0, gd_only=False):
+    def __init__(self, gd_dim=1024):
         super().__init__()
-
         vgg = models.vgg19(pretrained=True)
-        vgg.avgpool = vgg.classifier = nn.Identity()
-        self.features = vgg
+        del vgg.avgpool, vgg.classifier, vgg.features[-1]
+        self.features = vgg.features
 
-        self.gd_indim = 512
-        self.global_desc = GeM(self.gd_indim, gd_dim)
-        self.gd_only = gd_only
+        self.fea_dim = 512
+        self.global_desc = GeM(self.fea_dim, gd_dim)
 
     def forward(self, img):
-
-        B, _, H, W = img.shape
-
         fea = self.features(img)
-
-        gd, gd_locs = self.global_desc(fea.reshape(B, self.gd_indim, fea.shape[-1] * fea.shape[-2]).transpose(-1, -2))
-
-        return (gd, gd_locs) if self.training else gd
+        gd = self.global_desc(fea.reshape(fea.shape[0], fea.shape[1], -1).transpose(-1, -2))
+        return gd
