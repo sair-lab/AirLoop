@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def coord_list_grid_sample(values, points, mode='binlinear'):
+def coord_list_grid_sample(values, points, mode='bilinear'):
     dim = len(points.shape)
     points = points.view(values.size(0), 1, -1, 2) if dim == 3 else points
     output = F.grid_sample(values, points, mode, align_corners=True).permute(0, 2, 3, 1)

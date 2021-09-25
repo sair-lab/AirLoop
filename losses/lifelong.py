@@ -10,7 +10,6 @@ import torch
 import torch.autograd as ag
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.parallel.data_parallel import DataParallel
 
 from utils import PairwiseCosine
 from utils.misc import rectify_savepath
@@ -239,6 +238,7 @@ class KDLoss(LifelongLoss):
         self.relational = relational
         name = 'RKD' if relational else 'KD'
         name = ('' if last_only else 'C') + name
+        name = 'IFGIR' if name == 'CRKD' else name
         super().__init__(name, args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=lamb, post_backward=False)
         self.cosine = PairwiseCosine()
         self.model_s: nn.Module = None
@@ -301,3 +301,38 @@ class CompoundLifelongLoss():
 
     def __iter__(self):
         return iter(self.losses)
+
+
+def get_ll_loss(args, writer=None, viz=None, viz_start=float('inf'), viz_freq=200, counter=None):
+    if args.ll_method is None:
+        return None
+    assert len(args.ll_method) == len(args.ll_strength)
+
+    # create each lifelong loss
+    losses = []
+    extra_kwargs = {}
+    for method, strength in zip(args.ll_method, args.ll_strength):
+        method = method.lower()
+        if method == 'mas':
+            extra_kwargs['relational'] = False
+            loss_class = MASLoss
+        elif method == 'rmas':
+            loss_class = MASLoss
+        elif method == 'ewc':
+            loss_class = EWCLoss
+        elif method == 'si':
+            loss_class = SILoss
+        elif method == 'kd':
+            extra_kwargs['relational'] = False
+            loss_class = KDLoss
+        elif method == 'rkd':
+            loss_class = KDLoss
+        elif method == 'ifgir':
+            loss_class = KDLoss
+            extra_kwargs['last_only'] = False
+        else:
+            raise ValueError(f'Unrecognized lifelong method: {method}')
+
+        losses.append(loss_class(args=args, writer=writer, viz=viz, viz_start=viz_start, viz_freq=viz_freq, counter=counter, lamb=strength, **extra_kwargs))
+
+    return CompoundLifelongLoss(*losses)

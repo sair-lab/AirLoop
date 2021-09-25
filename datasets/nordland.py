@@ -11,11 +11,11 @@ from .base import DatasetBase
 
 class Nordland(DatasetBase):
 
-    def __init__(self, root, scale=1, augment=True, split='train', catalog_dir=None):
+    def __init__(self, root, scale=1, split='train', catalog_dir=None):
         self.split = split
         super().__init__(pathlib.Path(root) / 'nordland', f'nordland-{split}', catalog_dir)
 
-        self.augment = AirAugment(scale, size=[480, 640], resize_only=not augment)
+        self.augment = AirAugment(scale, size=[480, 640], resize_only=True)
         self.trimmed_size = [1080, 1440]
 
     def _populate(self):

@@ -6,7 +6,8 @@ import torch
 from utils import Visualizer
 from models.memory import TartanAirMemory, NordlandMemory, RobotCarMemory
 from utils import Projector, PairwiseCosine, gen_probe
-from losses import get_ll_loss
+
+from .lifelong import get_ll_loss
 
 
 class MemReplayLoss():
@@ -58,7 +59,7 @@ class MemReplayLoss():
                 loss_name = ll_loss.name.lower()
                 if loss_name in ['mas', 'rmas', 'ewc', 'cewc', 'si']:
                     loss += ll_loss(model=net, gd=gd)
-                elif loss_name in ['kd', 'rkd', 'crkd']:
+                elif loss_name in ['kd', 'rkd', 'ifgir']:
                     loss += ll_loss(model=net, gd=gd, img=img)
                 else:
                     raise ValueError(f'Unrecognized lifelong loss: {ll_loss}')

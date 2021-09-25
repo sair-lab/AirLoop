@@ -12,8 +12,8 @@ from tensorboard import program
 from torch.utils.tensorboard import SummaryWriter
 
 from models import FeatureNet
-from datasets import get_datasets
-from models.loss import MemReplayLoss
+from datasets import get_dataset
+from losses import MemReplayLoss
 from utils.evaluation import RecognitionEvaluator
 from utils.misc import save_model, load_model, GlobalStepCounter, ProgressBarDescription
 
@@ -29,7 +29,7 @@ def evaluate(net, loader, counter, args, writer=None):
 
         gd = net(images)
 
-        evaluator.observe(descriptors, points, scores, gd, pointness, aux, images, env_seq)
+        evaluator.observe(gd, aux, images, env_seq)
 
     evaluator.report()
 
@@ -72,8 +72,6 @@ def train(model, loader, optimizer, counter, args, writer=None):
         if 'env' in args.task:
             if args.save is not None:
                 save_model(model, '%s.%s' % (args.save, last_env))
-            if args.mem_save is not None:
-                criterion.memory.save('%s.%s' % (args.mem_save, last_env))
             if args.ll_method is not None:
                 criterion.ll_loss.save(task=last_env)
         else:
@@ -91,7 +89,7 @@ def main(args):
     if args.deterministic >= 3:
         torch.set_deterministic(True)
 
-    loader, _ = get_datasets(args)
+    loader = get_dataset(args)
     if args.devices is None:
         args.devices = ['cuda:%d' % i for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else ['cpu']
     args.device = args.devices[0]
@@ -118,7 +116,6 @@ def main(args):
 
     if 'train' in args.task:
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.w_decay)
-        # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.w_decay)
         train(model, loader, optimizer, step_counter, args, writer)
     if 'eval' in args.task:
         evaluate(model, loader, step_counter, args, writer)
@@ -128,7 +125,7 @@ if __name__ == "__main__":
     # Arguements
     parser = configargparse.ArgumentParser(description='Feature Graph Networks', default_config_files=['./.cache/config.yaml'])
     parser.add_argument("--config", is_config_file=True, help="Config file")
-    parser.add_argument("--task", type=str, choices=['pretrain', 'train-joint', 'train-envseq', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
+    parser.add_argument("--task", type=str, choices=['train-joint', 'train-envseq', 'eval-recog', 'eval-match', 'eval-match-recog'], default='train-envseq')
     parser.add_argument("--catalog-dir", type=str, default='./.cache/catalog', help='processed dataset')
     parser.add_argument("--no-parallel", action='store_true', help="DataParallel")
     parser.add_argument("--devices", type=str, nargs='+', default=None, help="Available devices")
@@ -161,11 +158,11 @@ if __name__ == "__main__":
     parser.add_argument("--viz-start", type=int, default=np.inf, help='Visualize starting from iteration')
     parser.add_argument("--viz-freq", type=int, default=1, help='Visualize every * iteration(s)')
     parser.add_argument("--eval-split-seed", type=int, default=42, help='Seed for splitting the dataset')
-    parser.add_argument("--pretrain-percentage", type=float, default=0.0, help='Percentage of sequences for eval')
     parser.add_argument("--eval-percentage", type=float, default=0.2, help='Percentage of sequences for eval')
     parser.add_argument("--eval-save", type=str, help='Evaluation save path')
     parser.add_argument("--eval-desc-save", type=str, help='Global descriptor save path')
     parser.add_argument("--eval-gt-save", type=str, help='Evaluation groundtruth save path')
-    parserd_args = parser.parse_args(); print(parserd_args)
+    parserd_args = parser.parse_args()
+    print(parserd_args)
 
     main(parserd_args)
