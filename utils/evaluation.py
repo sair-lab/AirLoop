@@ -1,45 +1,27 @@
 from dataclasses import dataclass, field
+import os
 from typing import Any, Dict, List
 
-import kornia.geometry.conversions as C
 import numpy as np
-import os
+from prettytable import PrettyTable
 import torch
 import tqdm
-
-from prettytable import PrettyTable, MARKDOWN
 
 from .geometry import Projector, gen_probe, feature_pt_ncovis
 from .misc import GlobalStepCounter
 from .utils import PairwiseCosine
 
-@dataclass
-class _EnvData():
-    env: str
-    gds: List[torch.Tensor] = field(default_factory=list)
-    n_observed: int = 0
-    seq_lims: Dict[str, List[int]] = field(default_factory=dict)
-    aux: List[Any] = field(default_factory=list)
-
-
-def chunk_index_itr(total: int, chunk_size: int):
-    for chunk_start in range(0, total, chunk_size):
-        chunk_end = min(total, chunk_start + chunk_size)
-        yield chunk_start, chunk_end
-
 
 class RecognitionEvaluator():
-    def __init__(self, loader, n_feature=250, D_frame=256, ks=[2, 5, 10], viz=None, writer=None, counter=None, args=None):
+    def __init__(self, loader, viz=None, writer=None, counter=None, args=None):
         self.viz = viz
         self.probe_pts, self.gds, self.n_observed = None, None, 0
         self.adj_mat = None
         self.loader = loader
-        self.n_feature, self.D_frame = n_feature, D_frame
 
         self.writer = writer
         self.counter = counter if counter is not None else GlobalStepCounter()
         self.env_data: Dict[str, _EnvData] = {}
-        self.ks = ks
         self.args = args
         self.chunk_size = 128
 
@@ -71,32 +53,39 @@ class RecognitionEvaluator():
 
         env_data.n_observed += B
 
+    @torch.no_grad()
     def report(self):
+        cosine = PairwiseCosine()
+        sim_dict = {}
+        for env, env_data in self.env_data.items():
+            gds = torch.cat(env_data.gds)
+            # reduce memory consumption
+            cossim = [[cosine(gds[None, st0:nd0], gds[None, st1:nd1])[0].cpu().numpy()
+                        for st1, nd1 in chunk_index_itr(len(gds), self.chunk_size)]
+                        for st0, nd0 in chunk_index_itr(len(gds), self.chunk_size)]
+            sim_dict[env] = np.block(cossim)
+
         if self.args.eval_save is not None:
-            cosine = PairwiseCosine()
-            save_dict = {}
-            for env, env_data in self.env_data.items():
-                gds = torch.cat(env_data.gds)
-                # reduce memory consumption
-                cossim = [[cosine(gds[None, st0:nd0], gds[None, st1:nd1])[0].cpu().numpy()
-                           for st1, nd1 in chunk_index_itr(len(gds), self.chunk_size)]
-                          for st0, nd0 in chunk_index_itr(len(gds), self.chunk_size)]
-                save_dict[env] = np.block(cossim)
-            np.savez_compressed(self.args.eval_save, **save_dict)
+            np.savez_compressed(self.args.eval_save, **sim_dict)
             print(f'Saved result: {self.args.eval_save}')
 
         if self.args.eval_desc_save is not None:
-            save_dict = {env: torch.cat(env_data.gds).cpu().numpy() for env, env_data in self.env_data.items()}
-            np.savez_compressed(self.args.eval_desc_save, **save_dict)
+            desc_dict = {env: torch.cat(env_data.gds).cpu().numpy() for env, env_data in self.env_data.items()}
+            np.savez_compressed(self.args.eval_desc_save, **desc_dict)
             print(f'Saved global descriptors: {self.args.eval_desc_save}')
 
-        if self.args.eval_gt_save is not None:
+        # load or compile groundtruth adjacency
+        gt_adj = None
+        if self.args.eval_gt_load is not None:
+            gt_adj = np.load(self.args.eval_gt_load)
+            print(f'Loaded ground truth: {self.args.eval_gt_load}')
+        elif self.args.eval_gt_save is not None:
             print('Building groundtruth adjcency matrix')
-            env_len, adj_mat = {}, {}
+            env_len, gt_adj = {}, {}
             for env, env_data in self.env_data.items():
                 lims = np.array(list(env_data.seq_lims.values()))
                 env_len[env] = (lims[:, 1] - lims[:, 0]).sum()
-                adj_mat[env] = np.full((env_len[env], env_len[env]), np.nan, dtype=np.float32)
+                gt_adj[env] = np.full((env_len[env], env_len[env]), np.nan, dtype=np.float32)
 
             env_progress = {env: 0 for env in self.env_data}
             for imgs, aux_d, env_seq in tqdm.tqdm(self.loader):
@@ -104,12 +93,22 @@ class RecognitionEvaluator():
                 n_total = env_len[env]
                 i = env_progress[env]
                 for st, nd in chunk_index_itr(n_total, self.chunk_size):
-                    adj_mat[env][st:nd, i:i+B] = self._calc_adjacency(self.env_data[env].aux[st:nd], aux_d)
+                    gt_adj[env][st:nd, i:i+B] = self._calc_adjacency(self.env_data[env].aux[st:nd], aux_d)
                 env_progress[env] += B
 
             os.makedirs(os.path.dirname(self.args.eval_gt_save), exist_ok=True)
-            np.savez_compressed(self.args.eval_gt_save, **adj_mat)
+            np.savez_compressed(self.args.eval_gt_save, **gt_adj)
             print(f'Saved ground truth: {self.args.eval_gt_save}')
+
+        if gt_adj is not None:
+            table = PrettyTable(field_names=['', 'R@100P'], float_format='.3')
+            criterion = get_criterion(self.args.dataset)
+            for env in sim_dict:
+                gt_adj_ = torch.from_numpy(gt_adj[env]).to(self.args.device).fill_diagonal_(0)
+                cossim = torch.from_numpy(sim_dict[env]).to(self.args.device).fill_diagonal_(0)
+                r100p = recall_at_100precision(gt_adj_, cossim, criterion)
+                table.add_row([env, r100p])
+            print(table.get_string())
 
     def _calc_adjacency(self, aux, aux_d):
         '''Calculate adjacency based on metadata'''
@@ -132,3 +131,38 @@ class RecognitionEvaluator():
             dist = torch.cdist(location, location_d)
             view_diff = (heading[:, None] - heading_d[None, :]).abs()
             return ((view_diff < HEADING_TOL).to(torch.float) / (dist + 1)).cpu().numpy()
+
+@dataclass
+class _EnvData():
+    env: str
+    gds: List[torch.Tensor] = field(default_factory=list)
+    n_observed: int = 0
+    seq_lims: Dict[str, List[int]] = field(default_factory=dict)
+    aux: List[Any] = field(default_factory=list)
+
+
+def chunk_index_itr(total: int, chunk_size: int):
+    for chunk_start in range(0, total, chunk_size):
+        chunk_end = min(total, chunk_start + chunk_size)
+        yield chunk_start, chunk_end
+
+
+def get_criterion(dataset_name):
+    if dataset_name == 'tartanair':
+        return lambda sim: sim > 0.5
+    elif dataset_name == 'nordland':
+        return lambda sim: sim > 1 / 3.5
+    elif dataset_name == 'robotcar':
+        return lambda sim: sim > 1 / (10 + 1)
+
+
+@torch.no_grad()
+def recall_at_100precision(gt_sim, pred_sim, relevant):
+    pred_rank = pred_sim.sort(dim=1, descending=True).indices
+    is_relevant = relevant(gt_sim)
+
+    n_rel = is_relevant.sum(dim=1).to(torch.float32)
+    _relevant = is_relevant.gather(1, pred_rank[:, :int(n_rel.max())]).to(torch.float32)
+    _n_rec_rel = torch.cumprod(_relevant, dim=1).sum(dim=1)
+    
+    return (_n_rec_rel / n_rel.clamp(min=1e-6)).mean().item()

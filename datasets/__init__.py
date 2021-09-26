@@ -29,6 +29,8 @@ def get_dataset(args):
         data = dataset_cls(args.dataset_root, args.scale, split=split, catalog_dir=args.catalog_dir)
 
     seq_merge, env_merge = 'cat', 'cat'
+    if 'joint' in args.task:
+        env_merge = 'rand_interleave'
 
     data.include_exclude(args.include, args.exclude)
     sampler = DefaultSampler(data, args.batch_size, seq_merge=seq_merge, env_merge=env_merge, overlap=False)

@@ -29,7 +29,14 @@ def save_model(model, path):
 
 
 def load_model(model, path, device='cuda', strict=False):
-    missing_keys, unexpected_keys = model.load_state_dict(torch.load(path, map_location=device), strict=strict)
+    #! tmp
+    state_dict = torch.load(path, map_location=device)
+    state_dict_ = {}
+    for k, v in state_dict.items():
+        k: str = k[25:] if k.startswith('features.encoder.encoder') else k
+        state_dict_[k] = v
+    state_dict = state_dict_
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=strict)
     if not strict:
         if len(missing_keys) > 0:
             print(f'Warning: Missing key(s): {missing_keys}')

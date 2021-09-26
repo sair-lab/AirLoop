@@ -119,12 +119,15 @@ class DefaultSampler(Sampler):
                 env_batches[env] = [list(batch) for batch in itertools.zip_longest(*([iter(env_samples)] * batch_size))]
         
         if env_merge == 'cat':
+            # A1 A2 A3 B1 B2 B3
             self.batches = list(itertools.chain(*env_batches.values()))
         elif env_merge == 'rand_interleave':
+            # A1 B1 A2 B2 B3 A3
             selection = sum([[env] * len(batch) for i, (env, batch) in enumerate(env_batches.items())], [])
             np.random.shuffle(selection)
             self.batches = [env_batches[env].pop() for env in selection]
         elif env_merge == 'rand_pick':
+            # B1 B2 A2 A1 A3 B3
             self.batches = list(itertools.chain(*env_batches.values()))
             np.random.shuffle(self.batches)
 
