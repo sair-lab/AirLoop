@@ -5,7 +5,7 @@ This repo contains the source code for paper:
 [Dasong Gao](http://theairlab.org/team/dasongg/), [Chen Wang](https://chenwang.site), [Sebastian Scherer](http://theairlab.org/team/sebastian/). "[AirLoop: Lifelong Loop Closure Detection](https://arxiv.org/pdf/2109.08975)." *arXiv preprint arXiv:2109.08975 (2021)*.
 
 <p align="center">
-  <a href="https://youtu.be/y_tyrrGZXpI">
+  <a href="https://youtu.be/Gr9i5ONNmz0">
     <img src="assets/images/motivation.gif" alt="Watch on YouTube">
   </a>
 </p>
