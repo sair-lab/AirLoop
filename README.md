@@ -1,6 +1,8 @@
 # AirLoop
 
-This repo contains the source code for "AirLoop: Lifelong Loop Closure Detection." Dasong Gao, Chen Wang, Sebastian Scherer. *[ArXiv 2021](https://arxiv.org/pdf/2109.08975)*.
+This repo contains the source code for paper:
+
+[Dasong Gao](http://theairlab.org/team/dasongg/), [Chen Wang](https://chenwang.site), [Sebastian Scherer](http://theairlab.org/team/sebastian/). "[AirLoop: Lifelong Loop Closure Detection](https://arxiv.org/pdf/2109.08975)." *arXiv preprint arXiv:2109.08975 (2021)*.
 
 <p align="center">
   <a href="https://youtu.be/y_tyrrGZXpI">
