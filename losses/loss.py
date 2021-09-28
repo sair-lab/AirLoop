@@ -18,13 +18,11 @@ class MemReplayLoss():
         self.viz = Visualizer('tensorboard', writer=self.writer)
 
         if args.dataset == 'tartanair':
-            self.memory = TartanAirMemory(capacity=args.mem_size, n_probe=1200, swap_dir=args.mem_save, out_device=args.device)
+            self.memory = TartanAirMemory(capacity=args.mem_size, n_probe=1200, out_device=args.device)
         elif args.dataset == 'nordland':
-            self.memory = NordlandMemory(capacity=args.mem_size, swap_dir=args.mem_save, out_device=args.device)
+            self.memory = NordlandMemory(capacity=args.mem_size, out_device=args.device)
         elif args.dataset == 'robotcar':
-            self.memory = RobotCarMemory(capacity=args.mem_size, dist_tol=20, head_tol=15, swap_dir=args.mem_save, out_device=args.device)
-        if args.mem_load is not None:
-            self.memory.load(args.mem_load)
+            self.memory = RobotCarMemory(capacity=args.mem_size, dist_tol=20, head_tol=15, out_device=args.device)
 
         self.n_triplet, self.n_recent, self.n_pair = 4, 0, 1
         self.min_sample_size = 32

@@ -10,6 +10,7 @@ import configargparse
 import torch.optim as optim
 from tensorboard import program
 from torch.utils.tensorboard import SummaryWriter
+import yaml
 
 from models import FeatureNet
 from datasets import get_dataset
@@ -57,7 +58,7 @@ def train(model, loader, optimizer, counter, args, writer=None):
                 optimizer.zero_grad()
 
             # save model on env change for env-incremental tasks
-            if 'env' in args.task and last_env != env_seq[0][0]:
+            if 'seq' in args.task and last_env != env_seq[0][0]:
                 if last_env is not None:
                     save_model(model, '%s.%s' % (args.save, last_env))
                 last_env = env_seq[0][0]
@@ -69,7 +70,7 @@ def train(model, loader, optimizer, counter, args, writer=None):
             pbd.update(loss)
             counter.step()
 
-        if 'env' in args.task:
+        if 'seq' in args.task:
             if args.save is not None:
                 save_model(model, '%s.%s' % (args.save, last_env))
             if args.ll_method is not None:
@@ -121,9 +122,9 @@ def main(args):
         evaluate(model, loader, step_counter, args, writer)
 
 
-if __name__ == "__main__":
+def run(args=None):
     # Arguements
-    parser = configargparse.ArgumentParser(description='Feature Graph Networks', default_config_files=['./.cache/config.yaml'])
+    parser = configargparse.ArgumentParser(description='Feature Graph Networks', default_config_files=['./config/config.yaml'])
     # general
     parser.add_argument("--config", is_config_file=True, help="Config file path")
     parser.add_argument("--task", type=str, choices=['train-seq', 'train-joint', 'eval'], default='train-seq', help="Task to perform")
@@ -132,6 +133,7 @@ if __name__ == "__main__":
     parser.add_argument("--devices", type=str, nargs='+', default=None, help="Available devices")
     parser.add_argument("--deterministic", type=int, default=3, help='Level of determinism.')
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
+    parser.add_argument("--ll-config", type=str, help='Config file for lifelong losses')
     # dataset
     parser.add_argument("--dataset-root", type=str, default='/data/datasets/', help="Home for all datasets")
     parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
@@ -146,10 +148,10 @@ if __name__ == "__main__":
     parser.add_argument("--save", type=str, default=None, help="Model save path")
     parser.add_argument("--save-freq", type=int, help="Model saving frequency")
     parser.add_argument("--save-steps", type=int, nargs="+", help="Specific steps to save model")
-    parser.add_argument("--ll-method", type=str, nargs='+', help="Lifelong learning method")
+    parser.add_argument("--ll-method", type=str, help="Lifelong learning method")
     parser.add_argument("--ll-weight-dir", type=str, default=None, help="Load directory for regularization weights")
     parser.add_argument("--ll-weight-load", type=str, nargs='+', help="Environment names for regularization weights")
-    parser.add_argument("--ll-strength", type=float, nargs='+', default=1, help="Weights of lifelong losses")
+    parser.add_argument("--ll-strength", type=float, nargs='+', help="Weights of lifelong losses")
     parser.add_argument("--batch-size", type=int, default=8, help="Minibatch size")
     parser.add_argument("--lr", type=float, default=2e-3, help="Learning rate")
     parser.add_argument("--w-decay", type=float, default=0, help="Weight decay of optim")
@@ -165,7 +167,16 @@ if __name__ == "__main__":
     parser.add_argument("--eval-desc-save", type=str, help='Global descriptor save path')
     parser.add_argument("--eval-gt-save", type=str, help='Evaluation groundtruth save path')
     parser.add_argument("--eval-gt-load", type=str, help='Evaluation groundtruth load path')
-    parserd_args = parser.parse_args()
-    print(parserd_args)
+    parserd_args = parser.parse_args(args)
+
+    # domain specific configs
+    if parserd_args.ll_config is not None and parserd_args.ll_method is not None:
+        with open(parserd_args.ll_config, 'r') as f:
+            for k, v in yaml.safe_load(f)[parserd_args.ll_method].items():
+                setattr(parserd_args, k.replace('-', '_'), v)
 
     main(parserd_args)
+
+
+if __name__ == "__main__":
+    run()

@@ -1,0 +1,19 @@
+si:
+  ll-method: ['si']
+  ll-strength: [0.1]
+
+ewc:
+  ll-method: ['ewc']
+  ll-strength: [200]
+
+rmas:
+  ll-method: ['rmas']
+  ll-strength: [100]
+
+rkd:
+  ll-method: ['rkd']
+  ll-strength: [2]
+
+airloop:
+  ll-method: ['rmas', 'rkd']
+  ll-strength: [100, 2]

@@ -1,0 +1,7 @@
+dataset-root: /data/datasets
+catalog-dir: /data/catalog
+eval-gt-load: /data/gt/tartanair.npz
+log-dir: ./logs
+ll-config: ./config/ll-config.yaml
+viz-start: 0
+viz-freq: 100
