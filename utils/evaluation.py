@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
@@ -25,6 +26,11 @@ class RecognitionEvaluator():
         self.args = args
         self.chunk_size = 128
 
+        self.gt_path = None
+        self.eval_gt_dir = args.eval_gt_dir
+        if args.eval_gt_dir is not None:
+            self.gt_path = Path(args.eval_gt_dir) / f'{args.dataset_name}.npz'
+
     @torch.no_grad()
     def observe(self, gd, aux, imgs, env_seq):
         B = len(imgs)
@@ -41,7 +47,7 @@ class RecognitionEvaluator():
         seq_lims = env_data.seq_lims.setdefault(seq, [env_data.n_observed, env_data.n_observed + B])
         seq_lims[1] = env_data.n_observed + B
 
-        if self.args.eval_gt_save is not None:
+        if self.gt_path is not None:
             if self.args.dataset == 'tartanair':
                 depth_map, poses, Ks = aux
                 probe_pts = Projector.pix2world(gen_probe(depth_map), depth_map, poses, Ks)
@@ -76,10 +82,10 @@ class RecognitionEvaluator():
 
         # load or compile groundtruth adjacency
         gt_adj = None
-        if self.args.eval_gt_load is not None:
-            gt_adj = np.load(self.args.eval_gt_load)
-            print(f'Loaded ground truth: {self.args.eval_gt_load}')
-        elif self.args.eval_gt_save is not None:
+        if self.gt_path.is_file():
+            gt_adj = np.load(self.gt_path)
+            print(f'Loaded ground truth: {self.gt_path}')
+        elif self.eval_gt_dir is not None:
             print('Building groundtruth adjcency matrix')
             env_len, gt_adj = {}, {}
             for env, env_data in self.env_data.items():
@@ -96,9 +102,9 @@ class RecognitionEvaluator():
                     gt_adj[env][st:nd, i:i+B] = self._calc_adjacency(self.env_data[env].aux[st:nd], aux_d)
                 env_progress[env] += B
 
-            os.makedirs(os.path.dirname(self.args.eval_gt_save), exist_ok=True)
-            np.savez_compressed(self.args.eval_gt_save, **gt_adj)
-            print(f'Saved ground truth: {self.args.eval_gt_save}')
+            os.makedirs(self.eval_gt_dir, exist_ok=True)
+            np.savez_compressed(self.gt_path, **gt_adj)
+            print(f'Saved ground truth: {self.gt_path}')
 
         if gt_adj is not None:
             table = PrettyTable(field_names=['', 'R@100P'], float_format='.3')

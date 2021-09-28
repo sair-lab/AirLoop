@@ -1,6 +1,6 @@
 dataset-root: /data/datasets
 catalog-dir: /data/catalog
-eval-gt-load: /data/gt/tartanair.npz
+eval-gt-dir: /data/gt/
 log-dir: ./logs
 ll-config: ./config/ll-config.yaml
 viz-start: 0
