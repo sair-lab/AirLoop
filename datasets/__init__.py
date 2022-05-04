@@ -25,7 +25,7 @@ def get_dataset(args):
         else:
             raise ValueError(f'Unrecognized dataset: {args.dataset}')
 
-        split = 'train' if 'train' in args.task else 'eval'
+        split = 'train' if 'train' in args.task else 'test'
         data = dataset_cls(args.dataset_root, args.scale, split=split, catalog_dir=args.catalog_dir)
 
     seq_merge, env_merge = 'cat', 'cat'

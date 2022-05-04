@@ -134,9 +134,10 @@ def run(args=None):
     parser.add_argument("--deterministic", type=int, default=3, help='Level of determinism.')
     parser.add_argument("--seed", type=int, default=0, help='Random seed.')
     parser.add_argument("--ll-config", type=str, help='Config file for lifelong losses')
+    parser.add_argument("--print-configs", action='store_true', help='Print parsed configs to console')
     # dataset
     parser.add_argument("--dataset-root", type=str, default='/data/datasets/', help="Home for all datasets")
-    parser.add_argument("--dataset", type=str, default='tartanair', help="TartanAir")
+    parser.add_argument("--dataset", type=str, choices=['tartanair', 'nordland', 'robotcar'], default='tartanair', help="Dataset to use")
     parser.add_argument("--include", type=str, default=None, help="Regex for sequences to include")
     parser.add_argument("--exclude", type=str, default=None, help="Regex for sequences to exclude")
     parser.add_argument('--scale', type=float, default=0.5, help='Image scale')
@@ -163,10 +164,9 @@ def run(args=None):
     # evaluation
     parser.add_argument("--eval-split-seed", type=int, default=42, help='Seed for splitting the dataset')
     parser.add_argument("--eval-percentage", type=float, default=0.2, help='Percentage of sequences for eval')
-    parser.add_argument("--eval-save", type=str, help='Evaluation save path')
-    parser.add_argument("--eval-desc-save", type=str, help='Global descriptor save path')
-    parser.add_argument("--eval-gt-save", type=str, help='Evaluation groundtruth save path')
-    parser.add_argument("--eval-gt-load", type=str, help='Evaluation groundtruth load path')
+    parser.add_argument("--eval-save", type=str, help='Raw evaluation result save path')
+    parser.add_argument("--eval-desc-save", type=str, help='Generated global descriptor save path')
+    parser.add_argument("--eval-gt-dir", type=str, help='Evaluation groundtruth save directory')
     parserd_args = parser.parse_args(args)
 
     # domain specific configs
@@ -174,6 +174,9 @@ def run(args=None):
         with open(parserd_args.ll_config, 'r') as f:
             for k, v in yaml.safe_load(f)[parserd_args.ll_method].items():
                 setattr(parserd_args, k.replace('-', '_'), v)
+
+    if parserd_args.print_configs:
+        print("Training config:", parserd_args)
 
     main(parserd_args)
 

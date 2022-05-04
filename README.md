@@ -73,10 +73,23 @@ The following values in [`config/config.yaml`](config/config.yaml) need to be se
  - `eval-gt-dir`: An (initially empty) directory for groundtruth produced during evaluation.
 
 ### Commandline
-The following command will train a model sequentially (except for `joint`) in the specified envronments and evaluate the performance:
+The following command trains the model with the specified method on TartanAir with default configuration and evaluate the performance:
 
 ```sh
-$ python main.py --dataset <tartanair/robotcar/nordland> --out-dir <OUT_DIR> --envs <LIST_OF_ENVIRONMENTS> --epochs <LIST_OF_EPOCHS> --method <finetune/si/ewc/kd/rkd/mas/rmas/airloop/joint>
+$ python main.py --method <finetune/si/ewc/kd/rkd/mas/rmas/airloop/joint>
 ```
+    
+Extra options*:
+ - `--dataset <tartanair/robotcar/nordland>`: dataset to use.
+ - `--envs <LIST_OF_ENVIRONMENTS>`: order of environments.**
+ - `--epochs <LIST_OF_EPOCHS>`: number of epochs to train in each environment.**
+ - `--eval-save <PATH>`: save path for predicted pairwise similarities generated during evaluation.
+ - `--out-dir <DIR>`: output directory for model checkpoints and importance weights.
+ - `--log-dir <DIR>`: Tensorboard `logdir`.
+ - `--skip-train`: perform evaluation only.
+ - `--skip-eval`: perform training only.
 
-`--skip-train` and `--skip-eval` can be specified to skip the train/test phase.
+\* See [`main_single.py`](main_single.py) for more settings.<br>
+\** See [`main.py`](main.py) for defaults.
+
+Evaluation results (R@100P in each environment) will be logged to console. `--eval-save` can be specified to save the predicted similarities in `.npz` format.

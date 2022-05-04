@@ -29,7 +29,7 @@ class RecognitionEvaluator():
         self.gt_path = None
         self.eval_gt_dir = args.eval_gt_dir
         if args.eval_gt_dir is not None:
-            self.gt_path = Path(args.eval_gt_dir) / f'{args.dataset_name}.npz'
+            self.gt_path = Path(args.eval_gt_dir) / f'{args.dataset}.npz'
 
     @torch.no_grad()
     def observe(self, gd, aux, imgs, env_seq):
