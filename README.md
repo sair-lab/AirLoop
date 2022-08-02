@@ -36,12 +36,12 @@ Improved loop closure detection on TartanAir after extended training:
 
 ### Data
 We used the following subsets of datasets in our expriments:
- - [TartanAir](https://theairlab.org/tartanair-dataset/)
+ - [TartanAir](https://theairlab.org/tartanair-dataset/), download with [tartanair_tools](https://github.com/castacks/tartanair_tools)
    - Train/Test: `abandonedfactory_night`, `carwelding`, `neighborhood`, `office2`, `westerndesert`;
- - [RobotCar](https://robotcar-dataset.robots.ox.ac.uk/)
+ - [RobotCar](https://robotcar-dataset.robots.ox.ac.uk/), download with [RobotCarDataset-Scraper](https://github.com/mttgdd/RobotCarDataset-Scraper)
    - Train: `2014-11-28-12-07-13`, `2014-12-10-18-10-50`, `2014-12-16-09-14-09`; 
    - Test: `2014-06-24-14-47-45`, `2014-12-05-15-42-07`, `2014-12-16-18-44-24`;
- - [Nordland](https://webdiis.unizar.es/~jmfacil/pr-nordland/)
+ - [Nordland](https://webdiis.unizar.es/~jmfacil/pr-nordland/), download with [gdown](https://github.com/wkentaro/gdown) from [Google Drive](https://drive.google.com/drive/folders/1SmrDOeUgBnJbpW187VFWxGjS7XdbZK5t)
    - Train/Test: All four seasons with recommended splits.
 
 The datasets are aranged as follows:
@@ -49,6 +49,10 @@ The datasets are aranged as follows:
 $DATASET_ROOT/
 ├── tartanair/
 │   ├── abandonedfactory_night/
+|   |   ├── Easy/
+|   |   |   └── ...
+│   │   └── Hard/
+│   │       └── ...
 │   └── ...
 ├── robotcar/
 │   ├── train/
@@ -65,6 +69,8 @@ $DATASET_ROOT/
         ├── fall_images_test/
         └── ...
 ```
+
+> **Note**: For TartanAir, only `<ENVIRONMENT>/<DIFFICULTY>/<image|depth>_left.zip` is required. After `unzip`ing downloaded zip files, make sure to remove the duplicate `<ENVIRONMENT>` directory level (`tartanair/abandonedfactory/abandonedfactory/Easy/...` -> `tartanair/abandonedfactory/Easy/...`).
 
 ### Configuration
 The following values in [`config/config.yaml`](config/config.yaml) need to be set:
